@@ -22,6 +22,7 @@ export default function App() {
   const [showSafeZones, setShowSafeZones] = useState(false);
   const [showSplitWipe, setShowSplitWipe] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false); // פתיחת חלונית AI
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   const [clips, setClips] = useState([]);
   const [history, setHistory] = useState([]);
