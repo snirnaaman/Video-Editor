@@ -4,16 +4,15 @@ import {
   Terminal, Image as ImageIcon, Music, RefreshCw 
 } from 'lucide-react';
 
-// ייבוא פונקציות המנוע (בהנחה שנוצרו בשלבים הקודמים)
-import { exportProjectOffline, convertMediaFileInBrowser } from './exportEngine';
-import { generateFFmpegCommand, generateSubtitlesFile, generateFcpXml } from './ffmpegCompiler';
+// התיקון: הייבוא המדויק מהקבצים הנכונים
+import { exportProjectOffline } from './exportEngine';
+import { generateFFmpegCommand, generateSubtitlesFile, generateFcpXml, convertMediaFileInBrowser } from './ffmpegCompiler';
 
 export default function ExportModal({ isOpen, onClose, projectData }) {
-  const [activeTab, setActiveTab] = useState('direct'); // direct | dev | convert
+  const [activeTab, setActiveTab] = useState('direct');
   
-  // Tab 1: Direct Export
   const [format, setFormat] = useState('mp4');
-  const [resolutionScale, setResolutionScale] = useState(1.0); // 1.0=1080p (base), 0.66=720p
+  const [resolutionScale, setResolutionScale] = useState(1.0);
   const [fps, setFps] = useState(30);
   const [bitrate, setBitrate] = useState(8);
   
@@ -21,11 +20,9 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
   const [progress, setProgress] = useState(0);
   const abortControllerRef = useRef(null);
 
-  // Tab 2: Dev / AI
   const [hwAccel, setHwAccel] = useState('auto');
   const [n8nUrl, setN8nUrl] = useState('');
 
-  // Tab 3: Converter
   const [convertFile, setConvertFile] = useState(null);
   const [convertTarget, setConvertTarget] = useState('mp4');
   const [isConverting, setIsConverting] = useState(false);
@@ -37,9 +34,6 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
 
   if (!isOpen) return null;
 
-  // -------------------------------------------------------------
-  // הנדלרים: ייצוא ישיר (Tab 1)
-  // -------------------------------------------------------------
   const handleStartExport = async () => {
     if (format === 'srt' || format === 'vtt') {
       const content = generateSubtitlesFile(projectData.texts, format);
@@ -84,9 +78,6 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
     }
   };
 
-  // -------------------------------------------------------------
-  // הנדלרים: ייצוא AI / מפתחים (Tab 2)
-  // -------------------------------------------------------------
   const handleDownloadFfmpeg = (os) => {
     const cmd = generateFFmpegCommand(projectData, { hardwareAccel: hwAccel, outputFormat: 'mp4', crf: 18 });
     const content = os === 'win' ? cmd.windowsBatScript : cmd.shellScript;
@@ -123,9 +114,6 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
     }
   };
 
-  // -------------------------------------------------------------
-  // הנדלרים: ממיר (Tab 3)
-  // -------------------------------------------------------------
   const handleConvert = async () => {
     if (!convertFile) return alert('בחר קובץ להמרה');
     setIsConverting(true);
@@ -167,10 +155,8 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
         </div>
 
         <div style={styles.body}>
-          {/* TAB 1: Direct Export */}
           {activeTab === 'direct' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              
               <div style={styles.grid2}>
                 <div>
                   <label style={styles.label}>פורמט יעד</label>
@@ -234,7 +220,6 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
             </div>
           )}
 
-          {/* TAB 2: AI / Dev Tools */}
           {activeTab === 'dev' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={styles.card}>
@@ -247,7 +232,7 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
               </div>
 
               <div style={styles.card}>
-                <div style={{ fontWeight: 600, marginBottom: 8, color: '#e4e4e7', display: 'flex', alignItems: 'center', gap: 6 }}><Terminal size={14} color="#10b981"/> ייצוא ל-FFmpeg מקומי (Batch / Bash)</div>
+                <div style={{ fontWeight: 600, marginBottom: 8, color: '#e4e4e7', display: 'flex', alignItems: 'center', gap: 6 }}><Terminal size={14} color="#10b981"/> ייצוא ל-FFmpeg מקומי</div>
                 <label style={styles.label}>האצת חומרה (Hardware Acceleration)</label>
                 <select style={styles.select} value={hwAccel} onChange={e => setHwAccel(e.target.value)}>
                   <option value="auto">CPU (libx264) - אוניברסלי, איכות מקסימלית</option>
@@ -268,7 +253,6 @@ export default function ExportModal({ isOpen, onClose, projectData }) {
             </div>
           )}
 
-          {/* TAB 3: Converter */}
           {activeTab === 'convert' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={styles.dragZone}>
