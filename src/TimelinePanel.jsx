@@ -18,13 +18,13 @@ export default function TimelinePanel({
   onUpdatePip,
   hasPip,
   pipName,
-  textSettings,
-  onUpdateText,
+  texts,          // מערך הטקסטים
+  onUpdateTexts,  // פונקציית עדכון הטקסטים
   audioName
 }) {
   const [zoomPercent, setZoomPercent] = useState(100);
-  // dragTarget: { track: 'pip'|'text', mode: 'start'|'end'|'move' }
-  const [dragTarget, setDragTarget] = useState(null);
+  // dragTarget שומר מידע גם על מזהה הטקסט הספציפי שנגרר
+  const [dragTarget, setDragTarget] = useState(null); 
   const [dragStartX, setDragStartX] = useState(0);
   const [initialTimes, setInitialTimes] = useState({ start: 0, end: 10 });
 
@@ -48,14 +48,18 @@ export default function TimelinePanel({
     setZoomPercent((prev) => (prev < 400 ? 600 : 100));
   };
 
-  const startBarDrag = (e, track, mode) => {
+  const startBarDrag = (e, track, mode, id = null) => {
     e.stopPropagation();
-    setDragTarget({ track, mode });
+    setDragTarget({ track, mode, id });
     setDragStartX(e.clientX);
+    
     if (track === 'pip') {
       setInitialTimes({ start: pipSettings.startTime, end: pipSettings.endTime });
-    } else if (track === 'text') {
-      setInitialTimes({ start: textSettings.startTime, end: textSettings.endTime });
+    } else if (track === 'text' && id) {
+      const activeTxt = texts.find(t => t.id === id);
+      if (activeTxt) {
+        setInitialTimes({ start: activeTxt.startTime, end: activeTxt.endTime });
+      }
     }
   };
 
@@ -84,8 +88,10 @@ export default function TimelinePanel({
 
     if (dragTarget.track === 'pip') {
       onUpdatePip({ ...pipSettings, startTime: roundedStart, endTime: roundedEnd });
-    } else if (dragTarget.track === 'text') {
-      onUpdateText({ ...textSettings, startTime: roundedStart, endTime: roundedEnd });
+    } else if (dragTarget.track === 'text' && dragTarget.id) {
+      onUpdateTexts(texts.map(t => 
+        t.id === dragTarget.id ? { ...t, startTime: roundedStart, endTime: roundedEnd } : t
+      ));
     }
   };
 
@@ -126,7 +132,6 @@ export default function TimelinePanel({
     return ticks;
   };
 
-  // יצירת דפוס ויזואלי של גלי קול (Waveform) לאורך מסילת האודיו
   const renderWaveformBars = () => {
     const barCount = Math.min(240, Math.floor(timelineWidth / 6));
     const bars = [];
@@ -154,7 +159,6 @@ export default function TimelinePanel({
       onMouseUp={stopBarDrag}
       onMouseLeave={stopBarDrag}
     >
-      {/* סרגל כלים עליון */}
       <div style={styles.toolbar}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button style={styles.actionBtn} onClick={onSplitClip} title="קיצור מקלדת: S">
@@ -198,7 +202,6 @@ export default function TimelinePanel({
         </div>
       </div>
 
-      {/* גוף ציר הזמן */}
       <div style={styles.bodyWrapper}>
         <div style={styles.labelsCol}>
           <div style={styles.rulerCorner}>זמן / פריימים</div>
@@ -220,24 +223,30 @@ export default function TimelinePanel({
               <div style={styles.playheadHead} />
             </div>
 
-            {/* מסילה 1: שכבת טקסט וכותרות */}
+            {/* מסילה 1: כותרות מרובות */}
             <div style={styles.trackLane}>
-              {textSettings.enabled && (
-                <div
-                  onMouseDown={(e) => startBarDrag(e, 'text', 'move')}
-                  style={{
-                    ...styles.textClip,
-                    left: timeToPx(textSettings.startTime),
-                    width: Math.max(24, timeToPx(textSettings.endTime - textSettings.startTime))
-                  }}
-                >
-                  <div onMouseDown={(e) => startBarDrag(e, 'text', 'start')} style={styles.textHandle} />
-                  <span style={styles.clipText}>
-                    {textSettings.content} ({textSettings.startTime}s - {textSettings.endTime}s)
-                  </span>
-                  <div onMouseDown={(e) => startBarDrag(e, 'text', 'end')} style={styles.textHandle} />
-                </div>
-              )}
+              {(texts || []).map((txt, index) => {
+                // מניעת הסתרה במקרה של טקסטים חופפים (הזזה קלה אנכית)
+                const topOffset = 5 + (index % 2) * 20; 
+                return (
+                  <div
+                    key={txt.id}
+                    onMouseDown={(e) => startBarDrag(e, 'text', 'move', txt.id)}
+                    style={{
+                      ...styles.textClip,
+                      top: topOffset,
+                      left: timeToPx(txt.startTime),
+                      width: Math.max(24, timeToPx(txt.endTime - txt.startTime))
+                    }}
+                  >
+                    <div onMouseDown={(e) => startBarDrag(e, 'text', 'start', txt.id)} style={styles.textHandle} />
+                    <span style={styles.clipText}>
+                      {txt.content} ({txt.startTime}s)
+                    </span>
+                    <div onMouseDown={(e) => startBarDrag(e, 'text', 'end', txt.id)} style={styles.textHandle} />
+                  </div>
+                );
+              })}
             </div>
 
             {/* מסילה 2: חלון PiP */}
@@ -260,7 +269,7 @@ export default function TimelinePanel({
               )}
             </div>
 
-            {/* מסילה 3: מקטעי וידאו ראשי */}
+            {/* מסילה 3: וידאו ראשי */}
             <div style={styles.trackLane}>
               {clips.map((clip, idx) => {
                 const isSelected = clip.id === selectedClipId;
@@ -290,7 +299,7 @@ export default function TimelinePanel({
               })}
             </div>
 
-            {/* מסילה 4: רצועת שמע עם גלי קול (Waveform) */}
+            {/* מסילה 4: אודיו */}
             <div style={styles.trackLane}>
               {(audioName || clips.length > 0) && (
                 <div style={{ ...styles.audioClip, left: 0, width: timelineWidth }}>
@@ -321,7 +330,7 @@ const styles = {
   playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: '#ef4444', zIndex: 25, pointerEvents: 'none' },
   playheadHead: { width: 10, height: 10, backgroundColor: '#ef4444', borderRadius: '50%', marginLeft: -4 },
   trackLane: { height: 45, borderBottom: '1px solid #27272a', position: 'relative' },
-  textClip: { position: 'absolute', top: 5, bottom: 5, backgroundColor: '#b45309', border: '1px solid #f59e0b', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', overflow: 'hidden' },
+  textClip: { position: 'absolute', height: 20, backgroundColor: '#b45309', border: '1px solid #f59e0b', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', overflow: 'hidden', zIndex: 10 },
   textHandle: { width: 6, height: '100%', backgroundColor: '#fcd34d', cursor: 'ew-resize', flexShrink: 0 },
   pipClip: { position: 'absolute', top: 5, bottom: 5, backgroundColor: '#7e22ce', border: '1px solid #c084fc', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', overflow: 'hidden' },
   pipHandle: { width: 6, height: '100%', backgroundColor: '#d8b4fe', cursor: 'ew-resize', flexShrink: 0 },
