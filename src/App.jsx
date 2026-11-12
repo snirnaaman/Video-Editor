@@ -1,70 +1,454 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
-  Play, Pause, Scissors, FlipHorizontal, Download, ZoomIn, ZoomOut,
-  Music, Video, Image as ImageIcon, ChevronLeft, ChevronRight,
-  Sliders, Trash2, Volume2, Layers, Maximize2
+  Play, Pause, FlipHorizontal, Download, Video, Image as ImageIcon,
+  Music, ChevronLeft, ChevronRight, Loader2
 } from 'lucide-react';
+import { DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS, LUT_PRESETS } from './defaultState';
+import InspectorPanel from './InspectorPanel';
+import TimelinePanel from './TimelinePanel';
 
 export default function App() {
   const videoRef = useRef(null);
-  const canvasBoxRef = useRef(null);
+  const extAudioRef = useRef(null);
+  const pipMediaRef = useRef(null);
+  const viewportRef = useRef(null);
 
   // מאגר מדיה (Media Pool)
   const [mediaPool, setMediaPool] = useState([]);
-  const [activeMainVideo, setActiveMainVideo] = useState(null);
-  const [activePip, setActivePip] = useState(null);
-  const [activeAudio, setActiveAudio] = useState(null);
+  const [mainVideoFile, setMainVideoFile] = useState(null);
+  const [pipFile, setPipFile] = useState(null);
+  const [extAudioFile, setExtAudioFile] = useState(null);
 
-  // מצב נגן וציר זמן
+  // מקטעי וידאו אמיתיים על ציר הזמן (Clips)
+  const [clips, setClips] = useState([]);
+  const [selectedClipId, setSelectedClipId] = useState(null);
+
+  // הגדרות שכבת PiP
+  const [pipSettings, setPipSettings] = useState({ ...DEFAULT_PIP_SETTINGS });
+
+  // מצב נגן וזמן
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(30);
-  const [zoom, setZoom] = useState(100);
+  const [currentTime, setCurrentTime] = useState(0); // זמן על ציר הזמן הערוך
 
-  // הגדרות עריכה (Inspector)
-  const [isMirrored, setIsMirrored] = useState(true);
-  const [pipRect, setPipRect] = useState({ x: 20, y: 20, width: 180 });
-  const [isDraggingPip, setIsDraggingPip] = useState(false);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [transitionType, setTransitionType] = useState('none');
-  const [mainVolume, setMainVolume] = useState(100);
-  const [extVolume, setExtVolume] = useState(100);
+  // גרירה ושינוי גודל של PiP ישירות על המסך
+  const [pipInteraction, setPipInteraction] = useState(null); // { mode: 'drag'|'resize', startX, startY, initRect }
 
-  // מקטעי חיתוך בציר הזמן
-  const [cuts, setCuts] = useState([]);
+  // מצב ייצוא והורדה למחשב
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
 
-  const handleFileUpload = (e, type) => {
-    const files = Array.from(e.target.files);
-    const newItems = files.map((file) => ({
-      id: Math.random().toString(36).substring(2, 9),
-      name: file.name,
-      type,
-      url: URL.createObjectURL(file)
-    }));
+  // חישוב אורך כולל של ציר הזמן הערוך
+  const totalDuration = clips.reduce((acc, c) => acc + (c.trimEnd - c.trimStart), 0);
 
-    setMediaPool((prev) => [...prev, ...newItems]);
+  // מציאת המקטע הפעיל בנקודת הזמן הנוכחית
+  const getActiveClipAtTime = (t) => {
+    if (clips.length === 0) return null;
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i];
+      const clipLen = c.trimEnd - c.trimStart;
+      if (t >= c.timelineStart && t <= c.timelineStart + clipLen + 0.02) {
+        return c;
+      }
+    }
+    return clips[clips.length - 1];
+  };
 
-    newItems.forEach((item) => {
-      if (item.type === 'video' && !activeMainVideo) setActiveMainVideo(item);
-      if (item.type === 'pip' && !activePip) setActivePip(item);
-      if (item.type === 'audio' && !activeAudio) setActiveAudio(item);
+  const activeClip = getActiveClipAtTime(currentTime);
+  const selectedClip = clips.find((c) => c.id === selectedClipId) || activeClip;
+
+  // חישוב מחדש של מיקומי המקטעים על ציר הזמן (ללא רווחים אחרי מחיקה)
+  const recalculateTimelinePositions = (clipList) => {
+    let cursor = 0;
+    return clipList.map((c) => {
+      const updated = { ...c, timelineStart: Number(cursor.toFixed(3)) };
+      cursor += (c.trimEnd - c.trimStart);
+      return updated;
     });
   };
 
-  const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (isPlaying) videoRef.current.pause();
-    else videoRef.current.play();
-    setIsPlaying(!isPlaying);
+  // העלאת קבצים למאגר
+  const handleFileUpload = (e, type) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+
+    const items = files.map((file) => ({
+      id: Math.random().toString(36).substring(2, 9),
+      name: file.name,
+      type,
+      isVideo: file.type.startsWith('video/'),
+      url: URL.createObjectURL(file)
+    }));
+
+    setMediaPool((prev) => [...prev, ...items]);
+
+    items.forEach((item) => {
+      if (item.type === 'video' && !mainVideoFile) selectMainVideo(item);
+      if (item.type === 'pip' && !pipFile) selectPipMedia(item);
+      if (item.type === 'audio' && !extAudioFile) setExtAudioFile(item);
+    });
   };
 
-  const stepFrame = (frames) => {
-    if (!videoRef.current) return;
-    videoRef.current.pause();
+  const selectMainVideo = (item) => {
+    setMainVideoFile(item);
+    setCurrentTime(0);
     setIsPlaying(false);
-    const nextTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + frames * (1 / 30)));
-    videoRef.current.currentTime = nextTime;
-    setCurrentTime(nextTime);
+  };
+
+  const selectPipMedia = (item) => {
+    setPipFile(item);
+    setPipSettings((prev) => ({
+      ...prev,
+      startTime: 0,
+      endTime: Math.min(10, totalDuration || 10)
+    }));
+  };
+
+  // אתחול מקטע ראשון כשהווידאו נטען
+  const handleVideoMetadata = () => {
+    if (!videoRef.current || !mainVideoFile) return;
+    const dur = videoRef.current.duration || 10;
+    const firstClip = {
+      id: 'clip-' + Date.now(),
+      label: mainVideoFile.name,
+      trimStart: 0,
+      trimEnd: Number(dur.toFixed(3)),
+      timelineStart: 0,
+      settings: { ...DEFAULT_CLIP_SETTINGS }
+    };
+    setClips([firstClip]);
+    setSelectedClipId(firstClip.id);
+    setPipSettings((prev) => ({ ...prev, endTime: Number(Math.min(10, dur).toFixed(1)) }));
+  };
+
+  // פיצול מקטע בנקודת הסמן (Split)
+  const handleSplitClip = () => {
+    if (!activeClip) return;
+    const offsetInClip = currentTime - activeClip.timelineStart;
+    const clipDuration = activeClip.trimEnd - activeClip.trimStart;
+
+    if (offsetInClip <= 0.1 || offsetInClip >= clipDuration - 0.1) return;
+
+    const splitSourceTime = Number((activeClip.trimStart + offsetInClip).toFixed(3));
+
+    const firstHalf = {
+      ...activeClip,
+      id: 'clip-' + Math.random().toString(36).substring(2, 7),
+      trimEnd: splitSourceTime,
+      settings: { ...activeClip.settings }
+    };
+
+    const secondHalf = {
+      ...activeClip,
+      id: 'clip-' + Math.random().toString(36).substring(2, 7),
+      trimStart: splitSourceTime,
+      settings: { ...activeClip.settings }
+    };
+
+    const idx = clips.findIndex((c) => c.id === activeClip.id);
+    const nextList = [...clips];
+    nextList.splice(idx, 1, firstHalf, secondHalf);
+
+    const recalculated = recalculateTimelinePositions(nextList);
+    setClips(recalculated);
+    setSelectedClipId(secondHalf.id);
+  };
+
+  // מחיקת מקטע וחיבור אוטומטי של שאר הסרטון
+  const handleDeleteClip = (clipId) => {
+    if (clips.length <= 1) return;
+    const filtered = clips.filter((c) => c.id !== clipId);
+    const recalculated = recalculateTimelinePositions(filtered);
+    setClips(recalculated);
+    setSelectedClipId(recalculated[0]?.id || null);
+    setCurrentTime(0);
+    if (videoRef.current && recalculated[0]) {
+      videoRef.current.currentTime = recalculated[0].trimStart;
+    }
+  };
+
+  // עדכון הגדרות צבע/חיתוך/מהירות של מקטע ספציפי
+  const handleUpdateClip = (clipId, newSettings) => {
+    setClips((prev) =>
+      prev.map((c) => (c.id === clipId ? { ...c, settings: newSettings } : c))
+    );
+  };
+
+  // סנכרון ניגון רציף בין המקטעים שנשארו
+  const handleTimeUpdate = () => {
+    const vid = videoRef.current;
+    if (!vid || !activeClip) return;
+
+    const s = activeClip.settings;
+    vid.playbackRate = s.speed;
+    vid.volume = Math.min(1, s.volume / 100);
+
+    // חישוב הזמן הערוך הנוכחי
+    const elapsedInClip = vid.currentTime - activeClip.trimStart;
+    const timelineNow = activeClip.timelineStart + Math.max(0, elapsedInClip);
+    setCurrentTime(timelineNow);
+
+    // אם הגענו לסוף המקטע הנוכחי, קפוץ למקטע הבא (דילוג על חלקים שנמחקו)
+    if (vid.currentTime >= activeClip.trimEnd - 0.04) {
+      const currentIndex = clips.findIndex((c) => c.id === activeClip.id);
+      const nextClip = clips[currentIndex + 1];
+      if (nextClip) {
+        vid.currentTime = nextClip.trimStart;
+      } else {
+        vid.pause();
+        if (extAudioRef.current) extAudioRef.current.pause();
+        setIsPlaying(false);
+        setCurrentTime(0);
+        vid.currentTime = clips[0].trimStart;
+      }
+    }
+  };
+
+  // קפיצה לנקודה בציר הזמן
+  const handleSeek = (targetTimelineSec) => {
+    const clamped = Math.max(0, Math.min(totalDuration, targetTimelineSec));
+    setCurrentTime(clamped);
+    const targetClip = getActiveClipAtTime(clamped);
+    if (targetClip && videoRef.current) {
+      const offset = clamped - targetClip.timelineStart;
+      videoRef.current.currentTime = targetClip.trimStart + offset;
+      setSelectedClipId(targetClip.id);
+    }
+    if (extAudioRef.current) {
+      extAudioRef.current.currentTime = clamped;
+    }
+  };
+
+  const togglePlay = () => {
+    const vid = videoRef.current;
+    if (!vid || clips.length === 0) return;
+
+    if (isPlaying) {
+      vid.pause();
+      if (extAudioRef.current) extAudioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      if (currentTime >= totalDuration - 0.05) {
+        handleSeek(0);
+      }
+      vid.play();
+      if (extAudioRef.current) {
+        extAudioRef.current.currentTime = currentTime;
+        extAudioRef.current.play().catch(() => {});
+      }
+      setIsPlaying(true);
+    }
+  };
+
+  const stepFrame = (dir) => {
+    if (isPlaying) togglePlay();
+    handleSeek(currentTime + dir * (1 / 30));
+  };
+
+  // בניית מחרוזת פילטרים של צבע ו-LUT לתצוגה ולייצוא
+  const buildCssFilterString = (s) => {
+    if (!s) return 'none';
+    const lutFilter = LUT_PRESETS[s.lutPreset]?.filter || '';
+    const tempSepia = s.temperature > 0 ? `sepia(${s.temperature / 200})` : '';
+    const tempCool = s.temperature < 0 ? `hue-rotate(${s.temperature * 0.4}deg)` : '';
+    const shadowContrast = s.shadows !== 0 || s.highlights !== 0
+      ? `contrast(${100 + (s.highlights - s.shadows) * 0.3}%)`
+      : '';
+
+    return [
+      `brightness(${s.brightness}%)`,
+      `contrast(${s.contrast}%)`,
+      `saturate(${s.saturate}%)`,
+      `hue-rotate(${s.hueRotate}deg)`,
+      s.blur > 0 ? `blur(${s.blur}px)` : '',
+      tempSepia,
+      tempCool,
+      shadowContrast,
+      lutFilter
+    ].filter(Boolean).join(' ');
+  };
+
+  // גרירה ושינוי גודל של חלון ה-PiP ישירות על גבי הווידאו
+  const onPipMouseDown = (e, mode) => {
+    e.stopPropagation();
+    setPipInteraction({
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      initRect: { ...pipSettings }
+    });
+  };
+
+  const onViewportMouseMove = (e) => {
+    if (!pipInteraction || !viewportRef.current) return;
+    const dx = e.clientX - pipInteraction.startX;
+    const dy = e.clientY - pipInteraction.startY;
+    const bounds = viewportRef.current.getBoundingClientRect();
+
+    if (pipInteraction.mode === 'drag') {
+      const nextX = Math.max(0, Math.min(bounds.width - pipInteraction.initRect.width, pipInteraction.initRect.x + dx));
+      const nextY = Math.max(0, Math.min(bounds.height - pipInteraction.initRect.height, pipInteraction.initRect.y + dy));
+      setPipSettings((prev) => ({ ...prev, x: Math.round(nextX), y: Math.round(nextY) }));
+    } else if (pipInteraction.mode === 'resize') {
+      const nextW = Math.max(60, Math.min(bounds.width - pipInteraction.initRect.x, pipInteraction.initRect.width + dx));
+      const nextH = Math.max(45, Math.min(bounds.height - pipInteraction.initRect.y, pipInteraction.initRect.height + dy));
+      setPipSettings((prev) => ({ ...prev, width: Math.round(nextW), height: Math.round(nextH) }));
+    }
+  };
+
+  const onViewportMouseUp = () => {
+    if (pipInteraction) setPipInteraction(null);
+  };
+
+  // ייצוא אמיתי והורדה ישירה של הווידאו הערוך למחשב
+  const handleExportAndDownload = async () => {
+    if (!videoRef.current || clips.length === 0 || isExporting) return;
+
+    setIsExporting(true);
+    setExportProgress(0);
+    setIsPlaying(false);
+    videoRef.current.pause();
+
+    const vid = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = vid.videoWidth || 1280;
+    canvas.height = vid.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+
+    // חיבור זרם וידאו + שמע להקלטה
+    const canvasStream = canvas.captureStream(30);
+    try {
+      const vidStream = vid.captureStream ? vid.captureStream() : vid.mozCaptureStream();
+      const audioTracks = vidStream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        canvasStream.addTrack(audioTracks[0]);
+      }
+    } catch (_) {}
+
+    const chunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : 'video/webm';
+
+    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 5000000 });
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const downloadUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `guitar-lesson-edited-${Date.now()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setIsExporting(false);
+      setExportProgress(100);
+      handleSeek(0);
+    };
+
+    recorder.start();
+
+    // הרצת כל המקטעים שנשארו וציורם לקנבס עם כל הפילטרים וה-PiP
+    let processedDuration = 0;
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      const s = clip.settings;
+      vid.currentTime = clip.trimStart;
+      vid.playbackRate = s.speed;
+      vid.volume = Math.min(1, s.volume / 100);
+
+      await new Promise((resolve) => {
+        vid.onseeked = () => resolve();
+      });
+
+      await vid.play();
+
+      await new Promise((resolve) => {
+        const drawStep = () => {
+          if (vid.currentTime >= clip.trimEnd - 0.03 || vid.paused || vid.ended) {
+            vid.pause();
+            resolve();
+            return;
+          }
+
+          const timelinePos = clip.timelineStart + (vid.currentTime - clip.trimStart);
+          setExportProgress(Math.min(99, Math.round((timelinePos / totalDuration) * 100)));
+
+          ctx.save();
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          // פילטרים, שקיפות, היפוך, סיבוב וזום
+          ctx.filter = buildCssFilterString(s);
+          ctx.globalAlpha = s.opacity / 100;
+          ctx.translate(canvas.width / 2 + s.posX, canvas.height / 2 + s.posY);
+          ctx.rotate((s.rotation * Math.PI) / 180);
+          ctx.scale(
+            (s.mirrorH ? -1 : 1) * (s.scale / 100),
+            (s.mirrorV ? -1 : 1) * (s.scale / 100)
+          );
+
+          // חיתוך שוליים (Crop)
+          const sx = (s.cropLeft / 100) * canvas.width;
+          const sy = (s.cropTop / 100) * canvas.height;
+          const sw = canvas.width * (1 - (s.cropLeft + s.cropRight) / 100);
+          const sh = canvas.height * (1 - (s.cropTop + s.cropBottom) / 100);
+
+          ctx.drawImage(
+            vid,
+            sx, sy, Math.max(1, sw), Math.max(1, sh),
+            -canvas.width / 2 + sx, -canvas.height / 2 + sy, Math.max(1, sw), Math.max(1, sh)
+          );
+          ctx.restore();
+
+          // ציור חלון ה-PiP אם הוא בטווח הזמן שהוגדר
+          if (
+            pipFile &&
+            pipMediaRef.current &&
+            timelinePos >= pipSettings.startTime &&
+            timelinePos <= pipSettings.endTime
+          ) {
+            const pEl = pipMediaRef.current;
+            const vpW = viewportRef.current?.clientWidth || 800;
+            const ratio = canvas.width / vpW;
+
+            const px = pipSettings.x * ratio;
+            const py = pipSettings.y * ratio;
+            const pw = pipSettings.width * ratio;
+            const ph = pipSettings.height * ratio;
+
+            ctx.save();
+            ctx.globalAlpha = pipSettings.opacity / 100;
+            ctx.translate(px + pw / 2, py + ph / 2);
+            ctx.rotate((pipSettings.rotation * Math.PI) / 180);
+
+            const natW = pEl.videoWidth || pEl.naturalWidth || 300;
+            const natH = pEl.videoHeight || pEl.naturalHeight || 200;
+            const psx = (pipSettings.cropLeft / 100) * natW;
+            const psy = (pipSettings.cropTop / 100) * natH;
+            const psw = natW * (1 - (pipSettings.cropLeft + pipSettings.cropRight) / 100);
+            const psh = natH * (1 - (pipSettings.cropTop + pipSettings.cropBottom) / 100);
+
+            ctx.drawImage(
+              pEl,
+              psx, psy, Math.max(1, psw), Math.max(1, psh),
+              -pw / 2, -ph / 2, pw, ph
+            );
+            ctx.restore();
+          }
+
+          requestAnimationFrame(drawStep);
+        };
+        requestAnimationFrame(drawStep);
+      });
+
+      processedDuration += (clip.trimEnd - clip.trimStart);
+    }
+
+    recorder.stop();
   };
 
   const formatTimecode = (sec) => {
@@ -74,82 +458,60 @@ export default function App() {
     return `00:${mins}:${secs}:${frames}`;
   };
 
-  const startDragPip = (e) => {
-    e.stopPropagation();
-    setIsDraggingPip(true);
-    setDragOffset({ x: e.clientX - pipRect.x, y: e.clientY - pipRect.y });
-  };
-
-  const onMouseMoveCanvas = (e) => {
-    if (!isDraggingPip || !canvasBoxRef.current) return;
-    const bounds = canvasBoxRef.current.getBoundingClientRect();
-    const newX = Math.max(0, Math.min(bounds.width - pipRect.width, e.clientX - dragOffset.x));
-    const newY = Math.max(0, Math.min(bounds.height - 80, e.clientY - dragOffset.y));
-    setPipRect((prev) => ({ ...prev, x: newX, y: newY }));
-  };
-
-  const stopDragPip = () => setIsDraggingPip(false);
-
-  const handleSplitAtPlayhead = () => {
-    const cutPoint = Number(currentTime.toFixed(2));
-    if (!cuts.includes(cutPoint) && cutPoint > 0 && cutPoint < duration) {
-      setCuts((prev) => [...prev, cutPoint].sort((a, b) => a - b));
-    }
-  };
-
-  const handleTimelineScrub = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const target = ratio * duration;
-    setCurrentTime(target);
-    if (videoRef.current) videoRef.current.currentTime = target;
-  };
-
-  const handleExport = () => {
-    const payload = {
-      mainVideo: activeMainVideo?.name || null,
-      mirror: isMirrored,
-      cuts,
-      transition: transitionType,
-      pip: activePip ? { file: activePip.name, ...pipRect } : null,
-      audio: { mainVolume, extFile: activeAudio?.name || null, extVolume }
-    };
-    alert('נתוני הפרויקט מוכנים לייצוא בשרת:\n' + JSON.stringify(payload, null, 2));
-  };
+  const curSettings = activeClip?.settings || DEFAULT_CLIP_SETTINGS;
+  const isPipVisibleNow =
+    pipFile && currentTime >= pipSettings.startTime && currentTime <= pipSettings.endTime;
 
   return (
-    <div style={styles.appShell} onMouseMove={onMouseMoveCanvas} onMouseUp={stopDragPip}>
-      {/* סרגל עליון ראשי */}
+    <div style={styles.appShell} onMouseMove={onViewportMouseMove} onMouseUp={onViewportMouseUp}>
+      {/* סרגל עליון */}
       <header style={styles.topHeader}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={styles.brandBadge}>STUDIO NLE</span>
-          <span style={{ fontSize: 13, color: '#a1a1aa' }}>פרויקט: קורס גיטרה — שיעור 1</span>
+          <span style={styles.brandBadge}>GUITAR STUDIO PRO</span>
+          <span style={{ fontSize: 12, color: '#a1a1aa' }}>
+            {clips.length > 0 ? `${clips.length} מקטעים בציר הזמן` : 'מוכן לעריכה'}
+          </span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button
-            style={{ ...styles.headerToolBtn, backgroundColor: isMirrored ? '#1d4ed8' : '#27272a' }}
-            onClick={() => setIsMirrored(!isMirrored)}
-          >
-            <FlipHorizontal size={15} />
-            <span>היפוך מראה: {isMirrored ? 'פעיל' : 'כבוי'}</span>
-          </button>
+          {activeClip && (
+            <button
+              style={{
+                ...styles.headerBtn,
+                backgroundColor: curSettings.mirrorH ? '#1d4ed8' : '#27272a'
+              }}
+              onClick={() =>
+                handleUpdateClip(activeClip.id, { ...curSettings, mirrorH: !curSettings.mirrorH })
+              }
+            >
+              <FlipHorizontal size={15} />
+              <span>היפוך מראה: {curSettings.mirrorH ? 'פעיל' : 'כבוי'}</span>
+            </button>
+          )}
 
-          <button style={styles.exportPrimaryBtn} onClick={handleExport}>
-            <Download size={15} />
-            <span>Quick Export</span>
+          <button
+            style={{
+              ...styles.exportBtn,
+              backgroundColor: isExporting ? '#059669' : '#2563eb'
+            }}
+            onClick={handleExportAndDownload}
+            disabled={isExporting || clips.length === 0}
+          >
+            {isExporting ? <Loader2 size={15} /> : <Download size={15} />}
+            <span>
+              {isExporting ? `מייצא סרטון... ${exportProgress}%` : 'ייצא והורד למחשב'}
+            </span>
           </button>
         </div>
       </header>
 
-      {/* אזור עבודה עליון מחולק ל-3 פאנלים קבועים */}
+      {/* אזור עבודה עליון מחולק ל-3 עמודות קבועות */}
       <div style={styles.workspaceGrid}>
-        
-        {/* פאנל 1: Media Pool */}
+        {/* 1. מאגר קבצים (Media Pool) */}
         <aside style={styles.mediaPoolPanel}>
           <div style={styles.panelTitleBar}>
             <span>Media Pool (מאגר קבצים)</span>
-            <span style={{ fontSize: 11, color: '#71717a' }}>{mediaPool.length} פריטים</span>
+            <span style={{ fontSize: 11, color: '#71717a' }}>{mediaPool.length}</span>
           </div>
 
           <div style={styles.uploadRow}>
@@ -172,21 +534,28 @@ export default function App() {
 
           <div style={styles.mediaGrid}>
             {mediaPool.length === 0 && (
-              <div style={styles.emptyPoolMsg}>העלה סרטון גיטרה, תמונת אקורדים או שמע כדי שיופיעו כאן</div>
+              <div style={styles.emptyPoolMsg}>
+                העלה וידאו ראשי, תמונה/תקריב לחלון צד (PiP) או רצועת סאונד
+              </div>
             )}
             {mediaPool.map((item) => (
               <div
                 key={item.id}
                 style={styles.mediaCard}
                 onClick={() => {
-                  if (item.type === 'video') setActiveMainVideo(item);
-                  if (item.type === 'pip') setActivePip(item);
-                  if (item.type === 'audio') setActiveAudio(item);
+                  if (item.type === 'video') selectMainVideo(item);
+                  if (item.type === 'pip') selectPipMedia(item);
+                  if (item.type === 'audio') setExtAudioFile(item);
                 }}
               >
                 <div style={styles.thumbBox}>
                   {item.type === 'video' && <video src={item.url} style={styles.thumbMedia} />}
-                  {item.type === 'pip' && <img src={item.url} alt="" style={styles.thumbMedia} />}
+                  {item.type === 'pip' &&
+                    (item.isVideo ? (
+                      <video src={item.url} style={styles.thumbMedia} />
+                    ) : (
+                      <img src={item.url} alt="" style={styles.thumbMedia} />
+                    ))}
                   {item.type === 'audio' && <Music size={24} color="#10b981" />}
                 </div>
                 <div style={styles.thumbLabel}>{item.name}</div>
@@ -195,53 +564,111 @@ export default function App() {
           </div>
         </aside>
 
-        {/* פאנל 2: מוניטור תצוגה מקדימה נעול */}
+        {/* 2. מוניטור תצוגה מקדימה נעול עם אפקטים בזמן אמת */}
         <main style={styles.monitorPanel}>
           <div style={styles.panelTitleBar}>
-            <span>Timeline Preview</span>
+            <span>Timeline Preview (תצוגה חיה)</span>
             <span style={{ fontFamily: 'monospace', color: '#38bdf8', direction: 'ltr' }}>
-              {formatTimecode(currentTime)}
+              {formatTimecode(currentTime)} / {formatTimecode(totalDuration)}
             </span>
           </div>
 
-          {/* תיבת המסך הנעולה לחלוטין */}
-          <div style={styles.monitorViewport} ref={canvasBoxRef}>
-            {activeMainVideo ? (
+          <div style={styles.monitorViewport} ref={viewportRef}>
+            {mainVideoFile ? (
               <video
                 ref={videoRef}
-                src={activeMainVideo.url}
-                onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
-                onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
-                onEnded={() => setIsPlaying(false)}
+                src={mainVideoFile.url}
+                onLoadedMetadata={handleVideoMetadata}
+                onTimeUpdate={handleTimeUpdate}
                 style={{
                   ...styles.lockedVideoElement,
-                  transform: isMirrored ? 'scaleX(-1)' : 'none'
+                  filter: buildCssFilterString(curSettings),
+                  opacity: curSettings.opacity / 100,
+                  mixBlendMode: curSettings.blendMode,
+                  clipPath: `inset(${curSettings.cropTop}% ${curSettings.cropRight}% ${curSettings.cropBottom}% ${curSettings.cropLeft}%)`,
+                  transform: `translate(${curSettings.posX}px, ${curSettings.posY}px) rotate(${curSettings.rotation}deg) scale(${
+                    (curSettings.mirrorH ? -1 : 1) * (curSettings.scale / 100)
+                  }, ${(curSettings.mirrorV ? -1 : 1) * (curSettings.scale / 100)})`
                 }}
               />
             ) : (
-              <span style={{ color: '#52525b', fontSize: 13 }}>בחר קובץ מ-Media Pool להצגה</span>
+              <span style={{ color: '#52525b', fontSize: 13 }}>
+                העלה סרטון ב-Media Pool כדי להתחיל לערוך
+              </span>
             )}
 
-            {/* חלון PiP הניתן לגרירה חופשית על המסך */}
-            {activePip && (
+            {/* אפקט האפלת פינות (Vignette) */}
+            {curSettings.vignette > 0 && (
               <div
-                onMouseDown={startDragPip}
                 style={{
                   position: 'absolute',
-                  left: pipRect.x,
-                  top: pipRect.y,
-                  width: pipRect.width,
-                  border: '2px solid #a855f7',
-                  borderRadius: 4,
+                  inset: 0,
+                  pointerEvents: 'none',
+                  boxShadow: `inset 0 0 ${curSettings.vignette * 1.8}px rgba(0,0,0,${curSettings.vignette / 100})`
+                }}
+              />
+            )}
+
+            {/* חלון תמונה/וידאו PiP — מופיע רק בזמנים שהוגדרו, ניתן לגרירה ושינוי גודל */}
+            {isPipVisibleNow && (
+              <div
+                onMouseDown={(e) => onPipMouseDown(e, 'drag')}
+                style={{
+                  position: 'absolute',
+                  left: pipSettings.x,
+                  top: pipSettings.y,
+                  width: pipSettings.width,
+                  height: pipSettings.height,
+                  opacity: pipSettings.opacity / 100,
+                  transform: `rotate(${pipSettings.rotation}deg)`,
+                  borderRadius: pipSettings.borderRadius,
+                  border: `${pipSettings.borderWidth}px solid ${pipSettings.borderColor}`,
                   overflow: 'hidden',
                   cursor: 'grab',
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.7)',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.75)',
                   zIndex: 20
                 }}
               >
-                <img src={activePip.url} alt="PiP" style={{ width: '100%', display: 'block', pointerEvents: 'none' }} />
+                {pipFile.isVideo ? (
+                  <video
+                    ref={pipMediaRef}
+                    src={pipFile.url}
+                    autoPlay
+                    loop
+                    muted
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      clipPath: `inset(${pipSettings.cropTop}% ${pipSettings.cropRight}% ${pipSettings.cropBottom}% ${pipSettings.cropLeft}%)`,
+                      pointerEvents: 'none'
+                    }}
+                  />
+                ) : (
+                  <img
+                    ref={pipMediaRef}
+                    src={pipFile.url}
+                    alt="PiP"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'fill',
+                      clipPath: `inset(${pipSettings.cropTop}% ${pipSettings.cropRight}% ${pipSettings.cropBottom}% ${pipSettings.cropLeft}%)`,
+                      pointerEvents: 'none'
+                    }}
+                  />
+                )}
+
+                {/* ידית שינוי גודל בפינה הימנית התחתונה */}
+                <div
+                  onMouseDown={(e) => onPipMouseDown(e, 'resize')}
+                  style={styles.resizeCornerHandle}
+                  title="גרור לשינוי גודל התמונה"
+                />
               </div>
             )}
+
+            {extAudioFile && <audio ref={extAudioRef} src={extAudioFile.url} hidden />}
           </div>
 
           {/* פקדי נגן מתחת למוניטור */}
@@ -258,126 +685,34 @@ export default function App() {
           </div>
         </main>
 
-        {/* פאנל 3: Inspector (הגדרות שכבה, מעברים ושמע) */}
-        <aside style={styles.inspectorPanel}>
-          <div style={styles.panelTitleBar}>
-            <span>Inspector (הגדרות)</span>
-            <Sliders size={14} color="#71717a" />
-          </div>
-
-          <div style={styles.inspectorBody}>
-            <div style={styles.inspectorGroup}>
-              <div style={styles.groupTitle}>חלון שכבה (PiP)</div>
-              <label style={styles.controlLabel}>גודל חלון: {pipRect.width}px</label>
-              <input
-                type="range" min="80" max="420" value={pipRect.width}
-                onChange={(e) => setPipRect({ ...pipRect, width: Number(e.target.value) })}
-              />
-              <span style={{ fontSize: 11, color: '#71717a' }}>גרור את החלון ישירות על גבי הווידאו</span>
-            </div>
-
-            <div style={styles.inspectorGroup}>
-              <div style={styles.groupTitle}>מעברים (Transitions)</div>
-              <select
-                value={transitionType}
-                onChange={(e) => setTransitionType(e.target.value)}
-                style={styles.darkSelect}
-              >
-                <option value="none">ללא מעבר (Cut)</option>
-                <option value="fade">עמעום (Cross Dissolve)</option>
-                <option value="dip">החשכה (Dip to Black)</option>
-              </select>
-            </div>
-
-            <div style={styles.inspectorGroup}>
-              <div style={styles.groupTitle}>מיקסר שמע (Audio)</div>
-              <label style={styles.controlLabel}>עוצמת וידאו ראשי: {mainVolume}%</label>
-              <input type="range" min="0" max="150" value={mainVolume} onChange={(e) => setMainVolume(e.target.value)} />
-
-              <label style={styles.controlLabel}>עוצמת רצועת שמע: {extVolume}%</label>
-              <input type="range" min="0" max="150" value={extVolume} onChange={(e) => setExtVolume(e.target.value)} />
-            </div>
-          </div>
-        </aside>
+        {/* 3. פאנל שליטה מלא (Inspector) */}
+        <InspectorPanel
+          selectedClip={selectedClip}
+          onUpdateClip={handleUpdateClip}
+          onDeleteClip={handleDeleteClip}
+          pipSettings={pipSettings}
+          onUpdatePip={setPipSettings}
+          hasPip={Boolean(pipFile)}
+          videoDuration={totalDuration}
+        />
       </div>
 
-      {/* פאנל 4: ציר זמן רב-ערוצי (Timeline) */}
-      <section style={styles.timelineDock}>
-        <div style={styles.timelineTools}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button style={styles.bladeBtn} onClick={handleSplitAtPlayhead}>
-              <Scissors size={14} color="#f87171" />
-              <span>חתוך בנקודת הסמן (Blade)</span>
-            </button>
-            {cuts.length > 0 && (
-              <button style={styles.bladeBtn} onClick={() => setCuts([])}>
-                <Trash2 size={13} />
-                <span>נקה חיתוכים ({cuts.length})</span>
-              </button>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <ZoomOut size={14} color="#71717a" />
-            <input type="range" min="50" max="200" value={zoom} onChange={(e) => setZoom(e.target.value)} />
-            <ZoomIn size={14} color="#71717a" />
-          </div>
-        </div>
-
-        <div style={styles.tracksWrapper} onClick={handleTimelineScrub}>
-          <div style={{ ...styles.playheadLine, left: `${(currentTime / (duration || 1)) * 100}%` }}>
-            <div style={styles.playheadCap} />
-          </div>
-
-          {cuts.map((cutSec, i) => (
-            <div
-              key={i}
-              style={{
-                position: 'absolute',
-                top: 0,
-                bottom: 0,
-                left: `${(cutSec / (duration || 1)) * 100}%`,
-                width: 2,
-                backgroundColor: '#facc15',
-                zIndex: 8
-              }}
-            />
-          ))}
-
-          <div style={styles.trackLane}>
-            <div style={styles.trackHeader}>V2 | PiP</div>
-            <div style={styles.trackBody}>
-              {activePip && (
-                <div style={{ ...styles.timelineClip, width: '40%', left: '15%', backgroundColor: '#7e22ce' }}>
-                  {activePip.name}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div style={styles.trackLane}>
-            <div style={styles.trackHeader}>V1 | Main</div>
-            <div style={styles.trackBody}>
-              {activeMainVideo && (
-                <div style={{ ...styles.timelineClip, width: '100%', left: '0%', backgroundColor: '#1d4ed8' }}>
-                  {activeMainVideo.name}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div style={styles.trackLane}>
-            <div style={styles.trackHeader}>A1 | Audio</div>
-            <div style={styles.trackBody}>
-              {(activeAudio || activeMainVideo) && (
-                <div style={{ ...styles.timelineClip, width: '100%', left: '0%', backgroundColor: '#047857' }}>
-                  {activeAudio ? activeAudio.name : 'ערוץ שמע מקורי (Waveform)'}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
+      {/* 4. ציר זמן תחתון (Timeline) */}
+      <TimelinePanel
+        duration={totalDuration}
+        currentTime={currentTime}
+        onSeek={handleSeek}
+        clips={clips}
+        selectedClipId={selectedClip?.id}
+        onSelectClip={setSelectedClipId}
+        onSplitClip={handleSplitClip}
+        onDeleteClip={handleDeleteClip}
+        pipSettings={pipSettings}
+        onUpdatePip={setPipSettings}
+        hasPip={Boolean(pipFile)}
+        pipName={pipFile?.name}
+        audioName={extAudioFile?.name}
+      />
     </div>
   );
 }
@@ -414,7 +749,7 @@ const styles = {
     borderRadius: 4,
     letterSpacing: 0.5
   },
-  headerToolBtn: {
+  headerBtn: {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
@@ -425,11 +760,10 @@ const styles = {
     fontSize: 12,
     cursor: 'pointer'
   },
-  exportPrimaryBtn: {
+  exportBtn: {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#2563eb',
     border: 'none',
     color: '#fff',
     padding: '6px 14px',
@@ -446,7 +780,7 @@ const styles = {
     overflow: 'hidden'
   },
   mediaPoolPanel: {
-    width: 280,
+    width: 260,
     backgroundColor: '#1c1c1f',
     borderLeft: '1px solid #27272a',
     display: 'flex',
@@ -469,7 +803,7 @@ const styles = {
   },
   uploadRow: {
     display: 'flex',
-    gap: 6,
+    gap: 5,
     padding: 8,
     borderBottom: '1px solid #27272a',
     flexShrink: 0
@@ -500,7 +834,8 @@ const styles = {
     textAlign: 'center',
     fontSize: 12,
     color: '#52525b',
-    marginTop: 24
+    marginTop: 24,
+    lineHeight: 1.5
   },
   mediaCard: {
     backgroundColor: '#27272a',
@@ -508,7 +843,7 @@ const styles = {
     overflow: 'hidden',
     border: '1px solid #3f3f46',
     cursor: 'pointer',
-    height: 92,
+    height: 88,
     display: 'flex',
     flexDirection: 'column'
   },
@@ -563,8 +898,18 @@ const styles = {
     height: '100%',
     objectFit: 'contain'
   },
+  resizeCornerHandle: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 14,
+    height: 14,
+    backgroundColor: '#a855f7',
+    cursor: 'nwse-resize',
+    borderTopLeftRadius: 4
+  },
   transportBar: {
-    height: 40,
+    height: 38,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -584,135 +929,5 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer'
-  },
-  inspectorPanel: {
-    width: 260,
-    backgroundColor: '#1c1c1f',
-    borderRight: '1px solid #27272a',
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: 0,
-    flexShrink: 0
-  },
-  inspectorBody: {
-    padding: 12,
-    overflowY: 'auto',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16
-  },
-  inspectorGroup: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    paddingBottom: 12,
-    borderBottom: '1px solid #27272a'
-  },
-  groupTitle: {
-    fontSize: 11,
-    fontWeight: 700,
-    color: '#38bdf8'
-  },
-  controlLabel: {
-    fontSize: 11,
-    color: '#a1a1aa'
-  },
-  darkSelect: {
-    backgroundColor: '#27272a',
-    color: '#fff',
-    border: '1px solid #3f3f46',
-    padding: '6px 8px',
-    borderRadius: 4,
-    fontSize: 12
-  },
-  timelineDock: {
-    height: 210,
-    backgroundColor: '#141416',
-    display: 'flex',
-    flexDirection: 'column',
-    flexShrink: 0
-  },
-  timelineTools: {
-    height: 36,
-    backgroundColor: '#1c1c1f',
-    borderBottom: '1px solid #27272a',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 14px',
-    flexShrink: 0
-  },
-  bladeBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#27272a',
-    border: '1px solid #3f3f46',
-    color: '#e4e4e7',
-    padding: '4px 10px',
-    borderRadius: 4,
-    fontSize: 11,
-    cursor: 'pointer'
-  },
-  tracksWrapper: {
-    flex: 1,
-    position: 'relative',
-    cursor: 'pointer',
-    direction: 'ltr',
-    overflow: 'hidden'
-  },
-  playheadLine: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: '#ef4444',
-    zIndex: 15,
-    pointerEvents: 'none'
-  },
-  playheadCap: {
-    width: 10,
-    height: 10,
-    backgroundColor: '#ef4444',
-    borderRadius: '50%',
-    marginLeft: -4
-  },
-  trackLane: {
-    display: 'flex',
-    height: 46,
-    borderBottom: '1px solid #27272a',
-    direction: 'rtl'
-  },
-  trackHeader: {
-    width: 90,
-    backgroundColor: '#18181b',
-    borderLeft: '1px solid #27272a',
-    display: 'flex',
-    alignItems: 'center',
-    paddingRight: 10,
-    fontSize: 11,
-    fontWeight: 600,
-    color: '#71717a',
-    flexShrink: 0
-  },
-  trackBody: {
-    flex: 1,
-    position: 'relative',
-    backgroundColor: '#121214',
-    direction: 'ltr'
-  },
-  timelineClip: {
-    position: 'absolute',
-    top: 5,
-    bottom: 5,
-    borderRadius: 4,
-    display: 'flex',
-    alignItems: 'center',
-    padding: '0 10px',
-    fontSize: 11,
-    color: '#fff',
-    border: '1px solid rgba(255,255,255,0.2)',
-    overflow: 'hidden',
-    whiteSpace: 'nowrap'
   }
 };
