@@ -12,7 +12,7 @@ const generateThumbnail = (url) => new Promise((resolve) => {
   vid.src = url;
   vid.muted = true;
   vid.crossOrigin = 'anonymous';
-  vid.currentTime = 1.0; // פריים בשנייה ה-1
+  vid.currentTime = 1.0; 
   vid.onloadeddata = () => {
     const canvas = document.createElement('canvas');
     canvas.width = 160; canvas.height = 90;
@@ -25,7 +25,7 @@ const generateThumbnail = (url) => new Promise((resolve) => {
 export default function App() {
   const videoRef = useRef(null); 
   const extAudioRef = useRef(null);
-  const bgCanvasRef = useRef(null); // חסכוני יותר מ-VideoRef נוסף
+  const bgCanvasRef = useRef(null); 
   const viewportRef = useRef(null);
   const importFileRef = useRef(null);
 
@@ -98,6 +98,74 @@ export default function App() {
   const recalculateTimelinePositions = (clipList) => {
     let cursor = 0;
     return clipList.map((c) => { const updated = { ...c, timelineStart: Number(cursor.toFixed(3)) }; cursor += (c.trimEnd - c.trimStart); return updated; });
+  };
+
+  const handleSeek = (targetTimelineSec) => {
+    const clamped = Math.max(0, Math.min(totalDuration, targetTimelineSec));
+    setCurrentTime(clamped);
+    const tClip = (() => {
+      for (let i = 0; i < clips.length; i++) {
+        if (clamped >= clips[i].timelineStart && clamped <= clips[i].timelineStart + (clips[i].trimEnd - clips[i].trimStart) + 0.02) return clips[i];
+      } return null;
+    })();
+    if (tClip && videoRef.current) {
+      videoRef.current.currentTime = tClip.trimStart + (clamped - tClip.timelineStart);
+      setSelectedClipId(tClip.id);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // אדריכלות AI Co-Pilot & Webhook Dispatcher 
+  // -------------------------------------------------------------
+  const dispatchAiActions = (actionsArray) => {
+    saveHistory(clips);
+    let nextClips = [...clips];
+    let nextTexts = [...texts];
+    let nextChords = [...chords];
+
+    actionsArray.forEach(action => {
+      if (action.type === 'UPDATE_CLIP_SETTINGS') {
+        nextClips = nextClips.map(c => c.id === action.clipId ? { ...c, settings: { ...c.settings, ...action.patch } } : c);
+      } 
+      else if (action.type === 'ADD_KEYFRAMES') {
+        nextClips = nextClips.map(c => {
+          if (c.id === action.clipId) {
+            const kf = c.settings.keyframes || {};
+            return { ...c, settings: { ...c.settings, keyframes: { ...kf, [action.property]: action.points } } };
+          } return c;
+        });
+      }
+      else if (action.type === 'ADD_CHORD_OVERLAY') {
+        nextChords.push({ ...DEFAULT_CHORD_OVERLAY, id: 'ai-chord-' + Date.now() + Math.random(), ...action.chord });
+      }
+      else if (action.type === 'ADD_TEXT_LAYER') {
+        nextTexts.push({ ...DEFAULT_TEXT_OBJECT, id: 'ai-txt-' + Date.now() + Math.random(), ...action.text });
+      }
+    });
+
+    setClips(nextClips);
+    setTexts(nextTexts);
+    setChords(nextChords);
+  };
+
+  const handleSendAiPrompt = async (userPrompt, webhookUrl) => {
+    const payload = {
+      userPrompt,
+      selectionContext: { currentTime, selectedClipId: selectedClip?.id, aspectRatio: aspectKey, totalDuration },
+      projectState: { timelineClips: clips, pipSettings, textLayers: texts, chordOverlays: chords }
+    };
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('שגיאת שרת: ' + res.status);
+    const data = await res.json();
+    
+    if (data.actions && Array.isArray(data.actions)) {
+      dispatchAiActions(data.actions);
+    }
+    return data.assistantMessage;
   };
 
   // -------------------------------------------------------------
@@ -175,13 +243,12 @@ export default function App() {
   }, []);
 
   // -------------------------------------------------------------
-  // אופטימיזציית טשטוש רקע (Canvas Blur במקום מפענח וידאו כפול)
+  // אופטימיזציית טשטוש רקע 
   // -------------------------------------------------------------
   useEffect(() => {
     let lastDraw = 0;
     let rafId;
     const drawBg = (now) => {
-      // מצייר רק 15 פעמים בשנייה לחיסכון במשאבים
       if (now - lastDraw > 66 && videoRef.current && bgCanvasRef.current && activeClip?.settings.fitMode === 'blurBg') {
          const ctx = bgCanvasRef.current.getContext('2d', { alpha: false });
          ctx.drawImage(videoRef.current, 0, 0, 64, 36);
@@ -194,7 +261,7 @@ export default function App() {
   }, [activeClip?.settings.fitMode]);
 
   // -------------------------------------------------------------
-  // אופטימיזציית Media Pool (Thumbnails וניקוי זיכרון)
+  // אופטימיזציית Media Pool
   // -------------------------------------------------------------
   const handleFileUpload = async (e, type) => {
     const files = Array.from(e.target.files);
@@ -204,7 +271,6 @@ export default function App() {
       const url = URL.createObjectURL(file);
       let thumbUrl = null;
       if (file.type.startsWith('video/')) thumbUrl = await generateThumbnail(url);
-      
       return { id: 'f-' + Date.now() + Math.random(), name: file.name, type, isVideo: file.type.startsWith('video/'), url, thumbUrl };
     }));
 
@@ -219,22 +285,33 @@ export default function App() {
   const handleDeleteMedia = (e, id, url) => {
     e.stopPropagation();
     setMediaPool(prev => prev.filter(m => m.id !== id));
-    URL.revokeObjectURL(url); // שחרור זיכרון RAM מיידי
+    URL.revokeObjectURL(url); // שחרור זיכרון
   };
 
-  // --- המשך הלוגיקה הרגילה ---
-  const handleSeek = (targetTimelineSec) => {
-    const clamped = Math.max(0, Math.min(totalDuration, targetTimelineSec));
-    setCurrentTime(clamped);
-    const tClip = (() => {
-      for (let i = 0; i < clips.length; i++) {
-        if (clamped >= clips[i].timelineStart && clamped <= clips[i].timelineStart + (clips[i].trimEnd - clips[i].trimStart) + 0.02) return clips[i];
-      } return null;
-    })();
-    if (tClip && videoRef.current) {
-      videoRef.current.currentTime = tClip.trimStart + (clamped - tClip.timelineStart);
-      setSelectedClipId(tClip.id);
-    }
+  const handleImportJSON = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (data.clips) setClips(data.clips);
+        if (data.texts) setTexts(data.texts);
+        if (data.chords) setChords(data.chords);
+        if (data.pipSettings) setPipSettings(data.pipSettings);
+        if (data.config?.aspectRatio) setAspectKey(data.config.aspectRatio);
+        alert('הפרויקט נטען בהצלחה!');
+      } catch (err) { alert('שגיאה בקריאת הקובץ.'); }
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  const handleVideoMetadata = () => {
+    if (!videoRef.current || !mainVideoFile || clips.length > 0) return;
+    const dur = videoRef.current.duration || 10;
+    const firstClip = { id: 'clip-' + Date.now(), label: mainVideoFile.name, trimStart: 0, trimEnd: Number(dur.toFixed(3)), timelineStart: 0, settings: { ...DEFAULT_CLIP_SETTINGS } };
+    setClips([firstClip]); setSelectedClipId(firstClip.id);
   };
 
   const handleTimeUpdate = () => {
@@ -258,7 +335,6 @@ export default function App() {
     setCanvasDrag({ target, mode, id, startX: e.clientX, startY: e.clientY, init });
   };
 
-  // אופטימיזציית תנועת עכבר: ויסות בעזרת RequestAnimationFrame
   const onViewportMouseMove = (e) => {
     if (!canvasDrag || !viewportRef.current) return;
     if (dragRaf.current) cancelAnimationFrame(dragRaf.current);
@@ -304,7 +380,7 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <input type="file" accept=".json" ref={importFileRef} style={{ display: 'none' }} />
+          <input type="file" accept=".json" ref={importFileRef} style={{ display: 'none' }} onChange={handleImportJSON} />
           <button style={styles.secondaryBtn} onClick={() => importFileRef.current?.click()} title="יבוא מ-JSON">
             <Upload size={14} /> ייבוא
           </button>
@@ -336,7 +412,6 @@ export default function App() {
                     {mediaPool.map((item) => (
                       <div key={item.id} style={styles.mediaCard} onClick={() => { if (item.type === 'video') selectMainVideo(item); if (item.type === 'pip') { setPipFile(item); setPipSettings({ ...DEFAULT_PIP_SETTINGS, endTime: Math.min(10, totalDuration || 10) }); } if (item.type === 'audio') setExtAudioFile(item); }}>
                         <div style={styles.thumbBox}>
-                          {/* אופטימיזציית Thumbnail במקום <video> פתוח */}
                           {item.thumbUrl ? <img src={item.thumbUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" /> : <Music size={24} color="#10b981" />}
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 6px', backgroundColor: '#18181b', alignItems: 'center' }}>
@@ -355,7 +430,6 @@ export default function App() {
           <div style={styles.monitorOuterStage}>
             <div ref={viewportRef} style={{ ...styles.aspectCanvasBox, aspectRatio: `${ASPECT_RATIOS[aspectKey].width} / ${ASPECT_RATIOS[aspectKey].height}`, transform: `scale(${previewZoom / 100})` }}>
               
-              {/* אופטימיזציית טשטוש רקע */}
               {mainVideoFile && cSettings.fitMode === 'blurBg' && (
                 <canvas ref={bgCanvasRef} width={64} height={36} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', filter: 'blur(18px) brightness(0.55)', transform: 'scale(1.1)', pointerEvents: 'none' }} />
               )}
@@ -396,7 +470,7 @@ export default function App() {
 
       <TimelinePanel duration={totalDuration} currentTime={currentTime} onSeek={handleSeek} clips={clips} selectedClipId={selectedClip?.id} onSelectClip={setSelectedClipId} onSplitClip={() => handlersRef.current.handleSplitClip()} onDeleteClip={(id) => handlersRef.current.handleDeleteClip(id)} onUndo={handleUndo} canUndo={history.length > 0} pipSettings={pipSettings} onUpdatePip={setPipSettings} hasPip={Boolean(pipFile)} pipName={pipFile?.name} texts={texts} onUpdateTexts={setTexts} chords={chords} onUpdateChords={setChords} audioName={extAudioFile?.name} />
       
-      <AiCopilotPanel isOpen={isAiOpen} onClose={() => setIsAiOpen(false)} currentTime={currentTime} selectedClip={selectedClip} hasPip={Boolean(pipFile)} />
+      <AiCopilotPanel isOpen={isAiOpen} onClose={() => setIsAiOpen(false)} currentTime={currentTime} selectedClip={selectedClip} hasPip={Boolean(pipFile)} onSendPrompt={handleSendAiPrompt} />
       <ExportModal isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} projectData={currentProjectData} />
     </div>
   );
