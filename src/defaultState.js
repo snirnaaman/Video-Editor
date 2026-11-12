@@ -1,11 +1,11 @@
 export const ASPECT_RATIOS = {
-  '16:9': { label: '16:9 רוחב (YouTube / קורס)', width: 1280, height: 720, ratio: 16 / 9 },
+  '16:9': { label: '16:9 רוחב (YouTube)', width: 1280, height: 720, ratio: 16 / 9 },
   '9:16': { label: '9:16 אורך (Reels / Shorts)', width: 720, height: 1280, ratio: 9 / 16 },
   '1:1':  { label: '1:1 ריבוע (Instagram)', width: 1080, height: 1080, ratio: 1 }
 };
 
 export const DEFAULT_CLIP_SETTINGS = {
-  // 1. תיקון ודירוג צבעים (Color Correction & Grading)
+  // צבע
   brightness: 100,
   contrast: 100,
   saturate: 100,
@@ -15,32 +15,36 @@ export const DEFAULT_CLIP_SETTINGS = {
   highlights: 0,
   lutPreset: 'none',
 
-  // 2. תנועה, גודל, התאמת מסך וחיתוך (Transform & Crop)
-  fitMode: 'contain',   // 'contain' (התאמה מלאה) | 'cover' (מילוי מסך) | 'blurBg' (רקע מטושטש)
+  // מסגור
+  fitMode: 'contain', 
   scale: 100,
   posX: 0,
   posY: 0,
   rotation: 0,
-  mirrorH: true,
+  mirrorH: false, // תוקן: ברירת מחדל כבויה
   mirrorV: false,
   cropTop: 0,
   cropBottom: 0,
   cropLeft: 0,
   cropRight: 0,
 
-  // 3. שקיפות, מעברים ואפקטים (Compositing & FX)
+  // אפקטים ושקיפות
   opacity: 100,
   blendMode: 'normal',
-  blur: 0,
+  blur: 0,             // טשטוש כללי (עדין יותר: 0 עד 5)
   vignette: 0,
-  fadeIn: 0,            // עמעום כניסה בשניות (0 - 3)
-  fadeOut: 0,           // עמעום יציאה בשניות (0 - 3)
+  fadeIn: 0,           
+  fadeOut: 0,
+  
+  // טשטוש נקודתי (Masking) - מערך של אזורים מטושטשים
+  blurMasks: [],       // דוגמה למבנה: [{ id, x, y, width, height, amount }]
 
-  // 4. זמן ושמע (Time & Audio)
+  // זמן ושמע
   speed: 1.0,
   volume: 100
 };
 
+// הגדרות תבנית לחלון PiP
 export const DEFAULT_PIP_SETTINGS = {
   startTime: 0,
   endTime: 10,
@@ -59,13 +63,14 @@ export const DEFAULT_PIP_SETTINGS = {
   borderColor: '#a855f7'
 };
 
-export const DEFAULT_TEXT_SETTINGS = {
-  enabled: false,
-  content: 'אקורד Am — פריטה איטית',
+// הגדרות תבנית לאובייקט טקסט בודד (מאפשר ריבוי טקסטים במקביל)
+export const DEFAULT_TEXT_OBJECT = {
+  id: '',              // יקבל מזהה ייחודי בעת היצירה
+  content: 'טקסט חדש',
   startTime: 0,
-  endTime: 8,
+  endTime: 5,
   x: 40,
-  y: 260,
+  y: 40,
   fontSize: 24,
   color: '#ffffff',
   bgColor: 'rgba(0, 0, 0, 0.65)',
