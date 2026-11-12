@@ -1,316 +1,348 @@
 import * as Mp4Muxer from 'mp4-muxer';
 import * as WebMMuxer from 'webm-muxer';
+import { drawChordOnCanvas } from './ChordDiagram';
+import { LUT_PRESETS } from './defaultState';
 
-// ---------------------------------------------------------------------------
-// 1. עיבוד וערבול אודיו אופליין (Offline Audio Mix)
-// ---------------------------------------------------------------------------
-export async function renderAudioMixOffline({ mainVideoUrl, extAudioUrl, clips, totalDuration, sampleRate = 48000 }) {
-  const offlineCtx = new OfflineAudioContext(2, Math.ceil(totalDuration * sampleRate), sampleRate);
+// 1. מיקס אודיו אופליין התומך בריבוי קליפים וערוצי שמע + EQ ו-Fades
+export async function renderAudioMixOffline({ clips = [], audioClips = [], totalDuration = 10, sampleRate = 48000 }) {
+  const safeDur = Math.max(1, totalDuration);
+  const offlineCtx = new OfflineAudioContext(2, Math.ceil(safeDur * sampleRate), sampleRate);
+  const decodedCache = new Map();
 
-  const fetchAndDecode = async (url) => {
-    const res = await fetch(url);
-    const arrayBuffer = await res.arrayBuffer();
-    return await offlineCtx.decodeAudioData(arrayBuffer);
+  const decodeUrl = async (url) => {
+    if (!url) return null;
+    if (decodedCache.has(url)) return decodedCache.get(url);
+    try {
+      const res = await fetch(url);
+      const buf = await res.arrayBuffer();
+      const audioBuf = await offlineCtx.decodeAudioData(buf);
+      decodedCache.set(url, audioBuf);
+      return audioBuf;
+    } catch {
+      return null;
+    }
   };
 
-  const mainAudioBuffer = mainVideoUrl ? await fetchAndDecode(mainVideoUrl) : null;
-  const extAudioBuffer = extAudioUrl ? await fetchAndDecode(extAudioUrl) : null;
+  // סאונד מתוך קליפי הווידאו הראשיים (V1)
+  for (const clip of clips) {
+    if (clip.isImage || !clip.url) continue;
+    const buf = await decodeUrl(clip.url);
+    if (!buf) continue;
+    const s = clip.settings || {};
+    const vol = (s.volume ?? 100) / 100;
+    if (vol <= 0) continue;
 
-  // עיבוד מקטעי האודיו מתוך הסרטון הראשי בהתאם לחיתוכים בציר הזמן
-  if (mainAudioBuffer && clips && clips.length > 0) {
-    clips.forEach(clip => {
-      const source = offlineCtx.createBufferSource();
-      source.buffer = mainAudioBuffer;
-      source.playbackRate.value = clip.settings.speed || 1;
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buf;
+    source.playbackRate.value = s.speed || 1;
 
-      const gainNode = offlineCtx.createGain();
-      gainNode.gain.value = (clip.settings.volume !== undefined ? clip.settings.volume : 100) / 100;
+    const gainNode = offlineCtx.createGain();
+    const clipLen = (clip.trimEnd - clip.trimStart) / (s.speed || 1);
+    const fadeIn = s.audioFadeIn || s.fadeIn || 0;
+    const fadeOut = s.audioFadeOut || s.fadeOut || 0;
 
-      // הגדרת עמעום (Fade In/Out)
-      const { fadeIn = 0, fadeOut = 0 } = clip.settings;
-      const clipDuration = (clip.trimEnd - clip.trimStart) / source.playbackRate.value;
-      
-      gainNode.gain.setValueAtTime(fadeIn > 0 ? 0 : gainNode.gain.value, clip.timelineStart);
-      if (fadeIn > 0) {
-        gainNode.gain.linearRampToValueAtTime(gainNode.gain.value, clip.timelineStart + fadeIn);
-      }
-      if (fadeOut > 0 && clipDuration > fadeOut) {
-        gainNode.gain.setValueAtTime(gainNode.gain.value, clip.timelineStart + clipDuration - fadeOut);
-        gainNode.gain.linearRampToValueAtTime(0, clip.timelineStart + clipDuration);
-      }
+    gainNode.gain.setValueAtTime(fadeIn > 0 ? 0.001 : vol, clip.timelineStart);
+    if (fadeIn > 0) gainNode.gain.linearRampToValueAtTime(vol, clip.timelineStart + Math.min(fadeIn, clipLen));
+    if (fadeOut > 0 && clipLen > fadeOut) {
+      gainNode.gain.setValueAtTime(vol, clip.timelineStart + clipLen - fadeOut);
+      gainNode.gain.linearRampToValueAtTime(0.001, clip.timelineStart + clipLen);
+    }
 
-      source.connect(gainNode);
-      gainNode.connect(offlineCtx.destination);
-
-      const durationToPlay = clip.trimEnd - clip.trimStart;
-      source.start(clip.timelineStart, clip.trimStart, durationToPlay);
-    });
+    source.connect(gainNode);
+    gainNode.connect(offlineCtx.destination);
+    source.start(clip.timelineStart, clip.trimStart, clip.trimEnd - clip.trimStart);
   }
 
-  // הוספת שכבת סאונד חיצוני אם ישנה
-  if (extAudioBuffer) {
-    const extSource = offlineCtx.createBufferSource();
-    extSource.buffer = extAudioBuffer;
-    extSource.connect(offlineCtx.destination);
-    extSource.start(0, 0, totalDuration);
+  // סאונד מתוך מסילת השמע הייעודית (A1)
+  for (const aClip of audioClips) {
+    if (aClip.muted || !aClip.url) continue;
+    const buf = await decodeUrl(aClip.url);
+    if (!buf) continue;
+    const vol = (aClip.volume ?? 100) / 100;
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buf;
+    source.playbackRate.value = aClip.speed || 1;
+
+    const gainNode = offlineCtx.createGain();
+    const clipLen = (aClip.trimEnd - aClip.trimStart) / (aClip.speed || 1);
+    const fadeIn = aClip.fadeIn || 0;
+    const fadeOut = aClip.fadeOut || 0;
+
+    gainNode.gain.setValueAtTime(fadeIn > 0 ? 0.001 : vol, aClip.timelineStart);
+    if (fadeIn > 0) gainNode.gain.linearRampToValueAtTime(vol, aClip.timelineStart + Math.min(fadeIn, clipLen));
+    if (fadeOut > 0 && clipLen > fadeOut) {
+      gainNode.gain.setValueAtTime(vol, aClip.timelineStart + clipLen - fadeOut);
+      gainNode.gain.linearRampToValueAtTime(0.001, aClip.timelineStart + clipLen);
+    }
+
+    source.connect(gainNode);
+    gainNode.connect(offlineCtx.destination);
+    source.start(aClip.timelineStart, aClip.trimStart, Math.min(buf.duration, aClip.trimEnd - aClip.trimStart));
   }
 
   return await offlineCtx.startRendering();
 }
 
-// ---------------------------------------------------------------------------
-// 2. המרת AudioBuffer ל-WAV מובנה
-// ---------------------------------------------------------------------------
+// 2. המרת AudioBuffer ל-WAV
 export function audioBufferToWavBlob(buffer) {
   const numOfChan = buffer.numberOfChannels;
   const length = buffer.length * numOfChan * 2 + 44;
   const bufferArray = new ArrayBuffer(length);
   const view = new DataView(bufferArray);
   const channels = [];
-  let sample;
-  let offset = 0;
   let pos = 0;
 
   const setUint16 = (data) => { view.setUint16(pos, data, true); pos += 2; };
   const setUint32 = (data) => { view.setUint32(pos, data, true); pos += 4; };
 
-  // RIFF Chunk Descriptor
-  setUint32(0x46464952); // "RIFF"
+  setUint32(0x46464952);
   setUint32(length - 8);
-  setUint32(0x45564157); // "WAVE"
-  
-  // FMT Sub-chunk
-  setUint32(0x20746d66); // "fmt "
+  setUint32(0x45564157);
+  setUint32(0x20746d66);
   setUint32(16);
-  setUint16(1); // PCM
+  setUint16(1);
   setUint16(numOfChan);
   setUint32(buffer.sampleRate);
   setUint32(buffer.sampleRate * 2 * numOfChan);
   setUint16(numOfChan * 2);
   setUint16(16);
-  
-  // Data Sub-chunk
-  setUint32(0x61746164); // "data"
+  setUint32(0x61746164);
   setUint32(length - pos - 4);
 
-  for (let i = 0; i < buffer.numberOfChannels; i++) {
-    channels.push(buffer.getChannelData(i));
-  }
+  for (let i = 0; i < numOfChan; i++) channels.push(buffer.getChannelData(i));
 
+  let offset = 0;
   while (pos < length) {
     for (let i = 0; i < numOfChan; i++) {
-      sample = Math.max(-1, Math.min(1, channels[i][offset]));
+      let sample = Math.max(-1, Math.min(1, channels[i][offset]));
       sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
       view.setInt16(pos, sample, true);
       pos += 2;
     }
     offset++;
   }
-
   return new Blob([bufferArray], { type: 'audio/wav' });
 }
 
-// ---------------------------------------------------------------------------
-// 3. מנוע ציור הפריים - מרנדר את כל השכבות בהתאם ל-timelineTime הנתון
-// ---------------------------------------------------------------------------
-export function drawCompositeFrameToCanvas({ 
-  ctx, width, height, timelineTime, activeClip, 
-  mainVideoEl, pipMediaEl, pipSettings, hasPip, texts, lutPresets 
+// 3. ציור פריים מאוחד לקנבס
+export function drawCompositeFrameToCanvas({
+  ctx, width, height, timelineTime, activeClip, mainMediaEl,
+  pipClips = [], mediaElementsMap, texts = [], chords = []
 }) {
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, width, height);
-  if (!activeClip || !mainVideoEl) return;
 
-  const s = activeClip.settings;
-  const vw = mainVideoEl.videoWidth || 1280;
-  const vh = mainVideoEl.videoHeight || 720;
-  
-  // חישוב יחס פרופורציה לייצוא
-  const scaleRatio = width / vw; // בהנחה שהקנבס יחסי לגודל המקור
+  const scaleRatio = width / 1280;
 
-  // ציור רקע מטושטש
-  if (s.fitMode === 'blurBg') {
-    ctx.save();
-    ctx.filter = 'blur(24px) brightness(0.55)';
-    const bgScale = Math.max(width / vw, height / vh);
-    const bw = vw * bgScale;
-    const bh = vh * bgScale;
-    ctx.drawImage(mainVideoEl, (width - bw) / 2, (height - bh) / 2, bw, bh);
-    ctx.restore();
-  }
+  if (activeClip && mainMediaEl) {
+    const s = activeClip.settings || {};
+    const vw = mainMediaEl.videoWidth || mainMediaEl.naturalWidth || 1280;
+    const vh = mainMediaEl.videoHeight || mainMediaEl.naturalHeight || 720;
 
-  ctx.save();
-  // שקיפות (כולל הדרגתיות בכניסה/יציאה)
-  let alpha = s.opacity / 100;
-  const localTime = timelineTime - activeClip.timelineStart;
-  const clipLen = activeClip.trimEnd - activeClip.trimStart;
-  if (s.fadeIn > 0 && localTime < s.fadeIn) alpha *= Math.max(0, localTime / s.fadeIn);
-  if (s.fadeOut > 0 && localTime > clipLen - s.fadeOut) alpha *= Math.max(0, (clipLen - localTime) / s.fadeOut);
-  
-  ctx.globalAlpha = alpha;
-  ctx.globalCompositeOperation = s.blendMode || 'source-over';
-
-  // בניית מחרוזת ה-Filter
-  const lutFilter = lutPresets?.[s.lutPreset]?.filter || '';
-  const tempSepia = s.temperature > 0 ? `sepia(${s.temperature / 200})` : '';
-  const tempCool = s.temperature < 0 ? `hue-rotate(${s.temperature * 0.4}deg)` : '';
-  const contrastAdj = s.shadows !== 0 || s.highlights !== 0 ? `contrast(${100 + (s.highlights - s.shadows) * 0.3}%)` : '';
-  ctx.filter = [
-    `brightness(${s.brightness}%)`, `contrast(${s.contrast}%)`, `saturate(${s.saturate}%)`,
-    `hue-rotate(${s.hueRotate}deg)`, s.blur > 0 ? `blur(${s.blur}px)` : '',
-    tempSepia, tempCool, contrastAdj, lutFilter
-  ].filter(Boolean).join(' ');
-
-  // התאמת מידות וטרנספורמציה
-  const fitScale = s.fitMode === 'cover' ? Math.max(width / vw, height / vh) : Math.min(width / vw, height / vh);
-  const drawW = vw * fitScale;
-  const drawH = vh * fitScale;
-
-  ctx.translate(width / 2 + s.posX * scaleRatio, height / 2 + s.posY * scaleRatio);
-  ctx.rotate((s.rotation * Math.PI) / 180);
-  ctx.scale((s.mirrorH ? -1 : 1) * (s.scale / 100), (s.mirrorV ? -1 : 1) * (s.scale / 100));
-
-  // חיתוך שוליים (Crop)
-  const sx = (s.cropLeft / 100) * vw;
-  const sy = (s.cropTop / 100) * vh;
-  const sw = vw * (1 - (s.cropLeft + s.cropRight) / 100);
-  const sh = vh * (1 - (s.cropTop + s.cropBottom) / 100);
-
-  ctx.drawImage(mainVideoEl, sx, sy, Math.max(1, sw), Math.max(1, sh), -drawW / 2, -drawH / 2, drawW, drawH);
-  ctx.restore();
-
-  // ציור האפלת פינות (Vignette)
-  if (s.vignette > 0) {
-    ctx.save();
-    const grad = ctx.createRadialGradient(width/2, height/2, height/4, width/2, height/2, width/2);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, `rgba(0,0,0,${s.vignette / 100})`);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, width, height);
-    ctx.restore();
-  }
-
-  // ציור מסכות טשטוש נקודתיות
-  if (s.blurMasks && s.blurMasks.length > 0) {
-    s.blurMasks.forEach(mask => {
+    if (s.fitMode === 'blurBg') {
       ctx.save();
-      ctx.filter = `blur(${mask.amount}px)`;
-      ctx.beginPath();
-      if (mask.shape === 'ellipse') {
-        ctx.ellipse(mask.x * scaleRatio + (mask.width * scaleRatio)/2, mask.y * scaleRatio + (mask.height * scaleRatio)/2, (mask.width * scaleRatio)/2, (mask.height * scaleRatio)/2, 0, 0, 2 * Math.PI);
-      } else {
-        ctx.rect(mask.x * scaleRatio, mask.y * scaleRatio, mask.width * scaleRatio, mask.height * scaleRatio);
-      }
-      ctx.clip();
-      ctx.drawImage(ctx.canvas, 0, 0); // מטשטש את התוכן שכבר צויר בקנבס דרך clipping
+      ctx.filter = 'blur(22px) brightness(0.55)';
+      const bgScale = Math.max(width / vw, height / vh);
+      ctx.drawImage(mainMediaEl, (width - vw * bgScale) / 2, (height - vh * bgScale) / 2, vw * bgScale, vh * bgScale);
       ctx.restore();
-    });
-  }
+    }
 
-  // חלון PiP (תמונה בתוך תמונה)
-  if (hasPip && pipMediaEl && timelineTime >= pipSettings.startTime && timelineTime <= pipSettings.endTime) {
     ctx.save();
-    const px = pipSettings.x * scaleRatio;
-    const py = pipSettings.y * scaleRatio;
-    const pw = pipSettings.width * scaleRatio;
-    const ph = pipSettings.height * scaleRatio;
+    let alpha = (s.opacity ?? 100) / 100;
+    const localTime = timelineTime - activeClip.timelineStart;
+    const clipLen = (activeClip.trimEnd - activeClip.trimStart) / (s.speed || 1);
+    if (s.fadeIn > 0 && localTime < s.fadeIn) alpha *= Math.max(0, localTime / s.fadeIn);
+    if (s.fadeOut > 0 && localTime > clipLen - s.fadeOut) alpha *= Math.max(0, (clipLen - localTime) / s.fadeOut);
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
 
-    ctx.globalAlpha = pipSettings.opacity / 100;
-    ctx.translate(px + pw / 2, py + ph / 2);
-    ctx.rotate((pipSettings.rotation * Math.PI) / 180);
+    const lutFilter = LUT_PRESETS[s.lutPreset]?.filter || '';
+    ctx.filter = `brightness(${s.brightness ?? 100}%) contrast(${s.contrast ?? 100}%) saturate(${s.saturate ?? 100}%) hue-rotate(${s.hueRotate ?? 0}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''} ${lutFilter}`.trim();
 
-    // עיגול פינות בחיתוך Path
-    if (pipSettings.borderRadius > 0) {
-      ctx.beginPath();
-      ctx.roundRect(-pw / 2, -ph / 2, pw, ph, pipSettings.borderRadius * scaleRatio);
-      ctx.clip();
-    }
-    
-    ctx.drawImage(pipMediaEl, -pw / 2, -ph / 2, pw, ph);
+    const fitScale = s.fitMode === 'cover' ? Math.max(width / vw, height / vh) : Math.min(width / vw, height / vh);
+    const drawW = vw * fitScale;
+    const drawH = vh * fitScale;
 
-    if (pipSettings.borderWidth > 0) {
-      ctx.lineWidth = pipSettings.borderWidth * scaleRatio;
-      ctx.strokeStyle = pipSettings.borderColor;
-      ctx.stroke();
-    }
+    let animScale = (s.scale ?? 100) / 100;
+    if (s.transitionIn === 'zoomIn' && localTime < 0.5) animScale *= 0.6 + (localTime / 0.5) * 0.4;
+
+    ctx.translate(width / 2 + (s.posX || 0) * scaleRatio, height / 2 + (s.posY || 0) * scaleRatio);
+    ctx.rotate(((s.rotation || 0) * Math.PI) / 180);
+    ctx.scale((s.mirrorH ? -1 : 1) * animScale, (s.mirrorV ? -1 : 1) * animScale);
+
+    const sx = ((s.cropLeft || 0) / 100) * vw;
+    const sy = ((s.cropTop || 0) / 100) * vh;
+    const sw = vw * (1 - ((s.cropLeft || 0) + (s.cropRight || 0)) / 100);
+    const sh = vh * (1 - ((s.cropTop || 0) + (s.cropBottom || 0)) / 100);
+
+    ctx.drawImage(mainMediaEl, sx, sy, Math.max(1, sw), Math.max(1, sh), -drawW / 2, -drawH / 2, drawW, drawH);
     ctx.restore();
   }
 
-  // שכבות טקסט
-  if (texts && texts.length > 0) {
-    texts.forEach(txt => {
-      if (timelineTime >= txt.startTime && timelineTime <= txt.endTime) {
-        ctx.save();
-        const tx = txt.x * scaleRatio;
-        const ty = txt.y * scaleRatio;
-        const fSize = Math.round(txt.fontSize * scaleRatio);
-        ctx.font = `${txt.bold ? 'bold ' : ''}${fSize}px system-ui, sans-serif`;
-        ctx.direction = 'rtl';
-        const metrics = ctx.measureText(txt.content);
-        
-        // ציור רקע לתיבת הטקסט
-        ctx.fillStyle = txt.bgColor;
-        ctx.fillRect(tx - metrics.actualBoundingBoxRight - 10, ty - fSize, metrics.width + 20, fSize + 14);
-        
-        ctx.fillStyle = txt.color;
-        ctx.fillText(txt.content, tx, ty);
-        ctx.restore();
+  // ציור כל שכבות ה-PiP הפעילות בזמן זה
+  pipClips.forEach((pip) => {
+    if (timelineTime >= pip.startTime && timelineTime <= pip.endTime) {
+      const el = mediaElementsMap?.get(pip.url);
+      if (!el) return;
+      ctx.save();
+      const px = pip.x * scaleRatio;
+      const py = pip.y * scaleRatio;
+      const pw = pip.width * scaleRatio;
+      const ph = pip.height * scaleRatio;
+
+      let pAlpha = (pip.opacity ?? 100) / 100;
+      if (pip.fadeIn > 0 && timelineTime - pip.startTime < pip.fadeIn) pAlpha *= (timelineTime - pip.startTime) / pip.fadeIn;
+      if (pip.fadeOut > 0 && pip.endTime - timelineTime < pip.fadeOut) pAlpha *= (pip.endTime - timelineTime) / pip.fadeOut;
+      ctx.globalAlpha = Math.max(0, Math.min(1, pAlpha));
+
+      ctx.translate(px + pw / 2, py + ph / 2);
+      ctx.rotate(((pip.rotation || 0) * Math.PI) / 180);
+      if (pip.borderRadius > 0) {
+        ctx.beginPath();
+        ctx.roundRect(-pw / 2, -ph / 2, pw, ph, pip.borderRadius * scaleRatio);
+        ctx.clip();
       }
-    });
-  }
+      ctx.drawImage(el, -pw / 2, -ph / 2, pw, ph);
+      ctx.restore();
+    }
+  });
+
+  // ציור דיאגרמות אקורדים
+  chords.forEach((chord) => {
+    if (timelineTime >= chord.startTime && timelineTime <= chord.endTime) {
+      drawChordOnCanvas(ctx, chord, scaleRatio);
+    }
+  });
+
+  // ציור כתוביות טקסט
+  texts.forEach((txt) => {
+    if (timelineTime >= txt.startTime && timelineTime <= txt.endTime) {
+      ctx.save();
+      const tx = txt.x * scaleRatio;
+      const ty = txt.y * scaleRatio;
+      const fSize = Math.round((txt.fontSize || 28) * scaleRatio);
+      ctx.font = `${txt.bold ? 'bold ' : ''}${fSize}px system-ui, sans-serif`;
+      ctx.direction = 'rtl';
+      ctx.textBaseline = 'top';
+      const metrics = ctx.measureText(txt.content);
+      const pad = 10 * scaleRatio;
+      ctx.fillStyle = txt.bgColor || 'rgba(0,0,0,0.7)';
+      ctx.beginPath();
+      ctx.roundRect(tx - pad, ty - pad * 0.6, metrics.width + pad * 2, fSize + pad * 1.2, 6 * scaleRatio);
+      ctx.fill();
+      ctx.fillStyle = txt.color || '#ffffff';
+      ctx.fillText(txt.content, tx + metrics.width, ty);
+      ctx.restore();
+    }
+  });
 }
 
-// ---------------------------------------------------------------------------
-// 4. לוגיקת קידוד וידאו WebCodecs ב-Background (ללא תצוגה חיה)
-// ---------------------------------------------------------------------------
-const seekVideoToTime = (videoEl, time) => {
+// פונקציית קפיצת זמן בטוחה שלעולם לא נתקעת על 0%
+const safeSeekVideo = (videoEl, targetTime) => {
+  if (!videoEl || videoEl.tagName !== 'VIDEO') return Promise.resolve();
+  const dur = videoEl.duration || 100;
+  const clamped = Math.max(0, Math.min(dur - 0.01, targetTime));
+  if (Math.abs(videoEl.currentTime - clamped) < 0.015 && videoEl.readyState >= 2) {
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
-    const handleSeeked = () => { videoEl.removeEventListener('seeked', handleSeeked); resolve(); };
-    videoEl.addEventListener('seeked', handleSeeked);
-    videoEl.currentTime = time;
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      videoEl.removeEventListener('seeked', done);
+      resolve();
+    };
+    const timer = setTimeout(done, 250);
+    videoEl.addEventListener('seeked', () => { clearTimeout(timer); done(); }, { once: true });
+    try {
+      videoEl.currentTime = clamped;
+    } catch {
+      clearTimeout(timer);
+      done();
+    }
   });
 };
 
+const loadMediaElement = (url, isImage = false) => {
+  return new Promise((resolve) => {
+    if (!url) return resolve(null);
+    if (isImage) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    } else {
+      const vid = document.createElement('video');
+      vid.crossOrigin = 'anonymous';
+      vid.muted = true;
+      vid.playsInline = true;
+      vid.preload = 'auto';
+      vid.onloadeddata = () => resolve(vid);
+      vid.onerror = () => resolve(null);
+      vid.src = url;
+      vid.load();
+    }
+  });
+};
+
+// 4. ייצוא הפרויקט המלא ברקע
 export async function exportProjectOffline({
-  format = 'mp4', resolutionScale = 1.0, fps = 30, bitrateMbps = 5,
-  projectState, onProgress, abortSignal
+  format = 'mp4',
+  resolutionScale = 1.0,
+  fps = 30,
+  bitrateMbps = 8,
+  projectState,
+  onProgress,
+  abortSignal
 }) {
-  const { config, clips, pipSettings, pipFileUrl, texts, mainVideoUrl, extAudioUrl, lutPresets } = projectState;
-  
+  const { config, clips = [], pipClips = [], audioClips = [], texts = [], chords = [] } = projectState;
+  const totalDuration = Math.max(0.5, config?.totalDuration || 5);
+
   if (format === 'wav') {
-    const audioMix = await renderAudioMixOffline({ mainVideoUrl, extAudioUrl, clips, totalDuration: config.totalDuration });
+    if (onProgress) onProgress(30);
+    const audioMix = await renderAudioMixOffline({ clips, audioClips, totalDuration });
+    if (onProgress) onProgress(100);
     return audioBufferToWavBlob(audioMix);
   }
 
-  if (!['mp4', 'mov', 'webm'].includes(format)) throw new Error('Format not supported by WebCodecs background export');
-  if (!window.VideoEncoder) throw new Error('WebCodecs API לא נתמך בדפדפן זה');
+  // וידוא מידות זוגיות (חובה ב-H.264)
+  const rawW = (config?.format?.width || 1280) * resolutionScale;
+  const rawH = (config?.format?.height || 720) * resolutionScale;
+  const width = Math.floor(rawW / 2) * 2;
+  const height = Math.floor(rawH / 2) * 2;
 
-  const width = Math.round(config.format.width * resolutionScale);
-  const height = Math.round(config.format.height * resolutionScale);
-  
-  // קנבס וווידאו המוחזקים בזכרון בלבד
-  const canvas = new OffscreenCanvas(width, height);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  
-  const hiddenVideo = document.createElement('video');
-  hiddenVideo.src = mainVideoUrl;
-  hiddenVideo.muted = true;
-  await new Promise(r => { hiddenVideo.onloadedmetadata = r; hiddenVideo.load(); });
 
-  let hiddenPip = null;
-  if (pipSettings && pipFileUrl) {
-    hiddenPip = document.createElement('video');
-    hiddenPip.src = pipFileUrl;
-    hiddenPip.muted = true;
-    await new Promise(r => { hiddenPip.onloadedmetadata = r; hiddenPip.load(); });
+  // טעינה מראש של כל קובצי המדיה בפרויקט
+  const mediaElementsMap = new Map();
+  for (const c of clips) {
+    if (c.url && !mediaElementsMap.has(c.url)) {
+      mediaElementsMap.set(c.url, await loadMediaElement(c.url, c.isImage));
+    }
+  }
+  for (const p of pipClips) {
+    if (p.url && !mediaElementsMap.has(p.url)) {
+      mediaElementsMap.set(p.url, await loadMediaElement(p.url, !p.isVideo));
+    }
   }
 
-  // הגדרת המוקסר (Muxer) המתאים
   let muxer;
-  if (format === 'webm') {
-    muxer = new WebMMuxer.Muxer({ target: new WebMMuxer.ArrayBufferTarget(), video: { codec: 'V_VP9', width, height, frameRate: fps }});
+  const isWebm = format === 'webm';
+  if (isWebm) {
+    muxer = new WebMMuxer.Muxer({
+      target: new WebMMuxer.ArrayBufferTarget(),
+      video: { codec: 'V_VP9', width, height, frameRate: fps }
+    });
   } else {
-    muxer = new Mp4Muxer.Muxer({ target: new Mp4Muxer.ArrayBufferTarget(), video: { codec: 'avc', width, height }, fastStart: 'in-memory' });
+    muxer = new Mp4Muxer.Muxer({
+      target: new Mp4Muxer.ArrayBufferTarget(),
+      video: { codec: 'avc', width, height },
+      fastStart: 'in-memory'
+    });
   }
 
   const videoEncoder = new VideoEncoder({
@@ -318,53 +350,87 @@ export async function exportProjectOffline({
     error: (e) => console.error('VideoEncoder error:', e)
   });
 
+  // בחירת פרופיל H.264 תומך HD ו-Full HD
+  let selectedCodec = isWebm ? 'vp09.00.10.08' : 'avc1.640028';
+  if (!isWebm && VideoEncoder.isConfigSupported) {
+    const check = await VideoEncoder.isConfigSupported({ codec: selectedCodec, width, height, bitrate: bitrateMbps * 1_000_000, framerate: fps });
+    if (!check.supported) selectedCodec = 'avc1.420028';
+  }
+
   videoEncoder.configure({
-    codec: format === 'webm' ? 'vp09.00.10.08' : 'avc1.42E01F',
-    width, height, bitrate: bitrateMbps * 1000000, framerate: fps
+    codec: selectedCodec,
+    width,
+    height,
+    bitrate: bitrateMbps * 1_000_000,
+    framerate: fps
   });
 
-  const totalFrames = Math.ceil(config.totalDuration * fps);
-  
-  // לולאת רינדור פריימים
+  const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
+
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
-    if (abortSignal?.aborted) { videoEncoder.close(); throw new Error('Export aborted'); }
-    
-    // ניהול עומס של ה-Encoder (Backpressure) למניעת קריסות זכרון
-    if (videoEncoder.encodeQueueSize > 5) {
-      await new Promise(resolve => setTimeout(resolve, 50));
+    if (abortSignal?.aborted) {
+      videoEncoder.close();
+      throw new Error('Export aborted');
+    }
+
+    while (videoEncoder.encodeQueueSize > 8) {
+      await new Promise(r => setTimeout(r, 15));
     }
 
     const timelineTime = frameIndex / fps;
-    const currentClip = clips.find(c => timelineTime >= c.timelineStart && timelineTime <= c.timelineStart + (c.trimEnd - c.trimStart));
-    
-    if (currentClip) {
-      const sourceTime = currentClip.trimStart + (timelineTime - currentClip.timelineStart) * currentClip.settings.speed;
-      await seekVideoToTime(hiddenVideo, sourceTime);
-      if (hiddenPip) await seekVideoToTime(hiddenPip, (pipSettings.startTime + timelineTime) % hiddenPip.duration);
-      
-      drawCompositeFrameToCanvas({ 
-        ctx, width, height, timelineTime, activeClip: currentClip, mainVideoEl: hiddenVideo, 
-        pipMediaEl: hiddenPip, pipSettings, hasPip: !!hiddenPip, texts, lutPresets 
-      });
-    } else {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
+    const activeClip = clips.find(c => {
+      const len = (c.trimEnd - c.trimStart) / (c.settings?.speed || 1);
+      return timelineTime >= c.timelineStart && timelineTime <= c.timelineStart + len + 0.02;
+    });
+
+    let mainEl = null;
+    if (activeClip) {
+      mainEl = mediaElementsMap.get(activeClip.url);
+      if (mainEl && !activeClip.isImage) {
+        const sourceTime = activeClip.trimStart + (timelineTime - activeClip.timelineStart) * (activeClip.settings?.speed || 1);
+        await safeSeekVideo(mainEl, sourceTime);
+      }
     }
+
+    for (const p of pipClips) {
+      if (p.isVideo && timelineTime >= p.startTime && timelineTime <= p.endTime) {
+        const pEl = mediaElementsMap.get(p.url);
+        if (pEl) await safeSeekVideo(pEl, timelineTime - p.startTime);
+      }
+    }
+
+    drawCompositeFrameToCanvas({
+      ctx,
+      width,
+      height,
+      timelineTime,
+      activeClip,
+      mainMediaEl: mainEl,
+      pipClips,
+      mediaElementsMap,
+      texts,
+      chords
+    });
 
     const timestamp = Math.round(timelineTime * 1_000_000);
     const duration = Math.round((1 / fps) * 1_000_000);
     const frame = new VideoFrame(canvas, { timestamp, duration });
-    
     videoEncoder.encode(frame, { keyFrame: frameIndex % (fps * 2) === 0 });
     frame.close();
 
-    if (onProgress) onProgress(Math.round((frameIndex / totalFrames) * 100));
+    const pct = Math.min(99, Math.round(((frameIndex + 1) / totalFrames) * 100));
+    if (onProgress) onProgress(pct);
+
+    // שחרור ה-Main Thread לעדכון מד ההתקדמות על המסך
+    if (frameIndex % 3 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
 
   await videoEncoder.flush();
   videoEncoder.close();
   muxer.finalize();
+  if (onProgress) onProgress(100);
 
-  const buffer = muxer.target.buffer;
-  return new Blob([buffer], { type: format === 'webm' ? 'video/webm' : 'video/mp4' });
+  return new Blob([muxer.target.buffer], { type: isWebm ? 'video/webm' : 'video/mp4' });
 }
