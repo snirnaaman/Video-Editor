@@ -1,58 +1,75 @@
-export const DEFAULT_CLIP_SETTINGS = {
-  // 1. תיקון ודירוג צבעים (Color Correction & Grading)
-  brightness: 100,      // בהירות וחשיפה (0% - 200%)
-  contrast: 100,        // ניגודיות (0% - 200%)
-  saturate: 100,        // רוויה (0% - 300%)
-  temperature: 0,       // טמפרטורה חם/קר (-100 עד 100)
-  hueRotate: 0,         // גוון / Tint (-180deg עד 180deg)
-  shadows: 0,           // כהים (-50 עד 50)
-  highlights: 0,        // בהירים (-50 עד 50)
-  lutPreset: 'none',    // פרופיל צבע מוכן (Cinematic, Warm, B&W, Vintage)
-
-  // 2. תנועה, גודל, סיבוב וחיתוך (Transform & Crop)
-  scale: 100,           // זום באחוזים (10% - 300%)
-  posX: 0,              // הזזה אופקית
-  posY: 0,              // הזזה אנכית
-  rotation: 0,          // סיבוב במעלות (-180 עד 180)
-  mirrorH: true,        // היפוך מראה אופקי (מותאם לגיטרה)
-  mirrorV: false,       // היפוך אנכי
-  cropTop: 0,           // חיתוך שוליים עליון (0% - 50%)
-  cropBottom: 0,        // חיתוך שוליים תחתון (0% - 50%)
-  cropLeft: 0,          // חיתוך שוליים שמאל (0% - 50%)
-  cropRight: 0,         // חיתוך שוליים ימין (0% - 50%)
-
-  // 3. שקיפות ומיזוג שכבות (Compositing & Blending)
-  opacity: 100,         // אטימות (0% - 100%)
-  blendMode: 'normal',  // normal, multiply, screen, overlay
-
-  // 4. אפקטים חזותיים (Visual Effects)
-  blur: 0,              // טשטוש (0px - 20px)
-  sharpen: 0,           // חידוד (0 - 100)
-  vignette: 0,          // האפלת פינות (0% - 100%)
-  grain: 0,             // גרעיניות סרט (0% - 100%)
-
-  // 5. זמן וקצב (Time Remapping)
-  speed: 1.0,           // מהירות (0.25x עד 4x)
-  volume: 100           // עוצמת שמע של המקטע
+export const ASPECT_RATIOS = {
+  '16:9': { label: '16:9 רוחב (YouTube / קורס)', width: 1280, height: 720, ratio: 16 / 9 },
+  '9:16': { label: '9:16 אורך (Reels / Shorts)', width: 720, height: 1280, ratio: 9 / 16 },
+  '1:1':  { label: '1:1 ריבוע (Instagram)', width: 1080, height: 1080, ratio: 1 }
 };
 
-export const DEFAULT_PIP_SETTINGS = {
-  startTime: 0,         // שנייה שבה התמונה/חלון מופיעים
-  endTime: 10,          // שנייה שבה התמונה/חלון נעלמים
-  x: 30,                // מיקום X על המסך
-  y: 30,                // מיקום Y על המסך
-  width: 220,           // רוחב החלון
-  height: 150,          // גובה החלון
-  rotation: 0,          // סיבוב החלון
-  opacity: 100,         // שקיפות החלון
-  cropTop: 0,           // חיתוך פנימי של התמונה עצמה
+export const DEFAULT_CLIP_SETTINGS = {
+  // 1. תיקון ודירוג צבעים (Color Correction & Grading)
+  brightness: 100,
+  contrast: 100,
+  saturate: 100,
+  temperature: 0,
+  hueRotate: 0,
+  shadows: 0,
+  highlights: 0,
+  lutPreset: 'none',
+
+  // 2. תנועה, גודל, התאמת מסך וחיתוך (Transform & Crop)
+  fitMode: 'contain',   // 'contain' (התאמה מלאה) | 'cover' (מילוי מסך) | 'blurBg' (רקע מטושטש)
+  scale: 100,
+  posX: 0,
+  posY: 0,
+  rotation: 0,
+  mirrorH: true,
+  mirrorV: false,
+  cropTop: 0,
   cropBottom: 0,
   cropLeft: 0,
   cropRight: 0,
-  borderRadius: 6,      // עיגול פינות
-  borderWidth: 2,       // עובי מסגרת
-  borderColor: '#a855f7',
-  blendMode: 'normal'
+
+  // 3. שקיפות, מעברים ואפקטים (Compositing & FX)
+  opacity: 100,
+  blendMode: 'normal',
+  blur: 0,
+  vignette: 0,
+  fadeIn: 0,            // עמעום כניסה בשניות (0 - 3)
+  fadeOut: 0,           // עמעום יציאה בשניות (0 - 3)
+
+  // 4. זמן ושמע (Time & Audio)
+  speed: 1.0,
+  volume: 100
+};
+
+export const DEFAULT_PIP_SETTINGS = {
+  startTime: 0,
+  endTime: 10,
+  x: 30,
+  y: 30,
+  width: 220,
+  height: 150,
+  rotation: 0,
+  opacity: 100,
+  cropTop: 0,
+  cropBottom: 0,
+  cropLeft: 0,
+  cropRight: 0,
+  borderRadius: 6,
+  borderWidth: 2,
+  borderColor: '#a855f7'
+};
+
+export const DEFAULT_TEXT_SETTINGS = {
+  enabled: false,
+  content: 'אקורד Am — פריטה איטית',
+  startTime: 0,
+  endTime: 8,
+  x: 40,
+  y: 260,
+  fontSize: 24,
+  color: '#ffffff',
+  bgColor: 'rgba(0, 0, 0, 0.65)',
+  bold: true
 };
 
 export const LUT_PRESETS = {
