@@ -27,20 +27,19 @@ export default function App() {
 
   // הגדרות כלליות
   const [aspectKey, setAspectKey] = useState('16:9');
-  const [previewZoom, setPreviewZoom] = useState(100); // זום תצוגה מקדימה
+  const [previewZoom, setPreviewZoom] = useState(100);
 
-  // נתוני העריכה (ה"מוח")
+  // נתוני העריכה
   const [clips, setClips] = useState([]);
   const [history, setHistory] = useState([]);
   const [selectedClipId, setSelectedClipId] = useState(null);
   const [pipSettings, setPipSettings] = useState({ ...DEFAULT_PIP_SETTINGS });
-  const [texts, setTexts] = useState([]); // מערך הטקסטים המרובים
+  const [texts, setTexts] = useState([]);
 
   // נגן וזמן
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
 
-  // גרירה על מסך התצוגה: { target: 'pip'|'text', id, mode: 'drag'|'resize', startX, startY, init }
   const [canvasDrag, setCanvasDrag] = useState(null);
 
   const totalDuration = clips.reduce((acc, c) => acc + (c.trimEnd - c.trimStart), 0);
@@ -261,7 +260,6 @@ export default function App() {
     ].filter(Boolean).join(' ');
   };
 
-  // גרירת שכבות (טקסטים מרובים וחלון PiP)
   const onLayerMouseDown = (e, target, mode, id = null) => {
     e.stopPropagation();
     const initData = target === 'pip' ? { ...pipSettings } : { ...texts.find(t => t.id === id) };
@@ -293,7 +291,6 @@ export default function App() {
 
   const onViewportMouseUp = () => { if (canvasDrag) setCanvasDrag(null); };
 
-  // ייצוא קובץ פקודות (JSON) עבור AI / FFmpeg בשרת Colab
   const handleExportJSON = () => {
     const projectData = {
       projectConfig: { aspectRatio: aspectKey, format: ASPECT_RATIOS[aspectKey], totalDuration },
@@ -303,7 +300,6 @@ export default function App() {
       textLayers: texts,
       audioTrack: extAudioFile ? extAudioFile.name : null
     };
-
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -312,7 +308,7 @@ export default function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    alert('קובץ הפרויקט הוריד בהצלחה! הקובץ הזה משמש כהוראות מדויקות לסוכן ה-AI ול-FFmpeg לייצר את ה-MP4.');
+    alert('קובץ הפרויקט (JSON) ירד בהצלחה! השתמש בקובץ זה דרך סוכן ה-AI ב-n8n ליצירת סרטון MP4 סופי.');
   };
 
   const formatTimecode = (sec) => {
@@ -327,7 +323,6 @@ export default function App() {
 
   return (
     <div style={styles.appShell} onMouseMove={onViewportMouseMove} onMouseUp={onViewportMouseUp}>
-      {/* סרגל עליון */}
       <header style={styles.topHeader}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={styles.brandBadge}>GUITAR STUDIO PRO</span>
@@ -352,13 +347,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* אזור עבודה מרכזי */}
       <div style={styles.workspaceGrid}>
-        {/* מאגר מדיה */}
         <aside style={styles.mediaPoolPanel}>
-          <div style={styles.panelTitleBar}>
-            <span>Media Pool</span>
-          </div>
+          <div style={styles.panelTitleBar}><span>Media Pool</span></div>
           <div style={styles.uploadRow}>
             <label style={styles.miniUploadBtn}><Video size={14} color="#3b82f6" /><span>וידאו</span><input type="file" accept="video/*" onChange={(e) => handleFileUpload(e, 'video')} hidden /></label>
             <label style={styles.miniUploadBtn}><ImageIcon size={14} color="#a855f7" /><span>PiP</span><input type="file" accept="image/*,video/*" onChange={(e) => handleFileUpload(e, 'pip')} hidden /></label>
@@ -378,12 +369,10 @@ export default function App() {
           </div>
         </aside>
 
-        {/* מוניטור תצוגה מקדימה + זום */}
         <main style={styles.monitorPanel}>
           <div style={styles.panelTitleBar}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span>Preview</span>
-              {/* סרגל זום תצוגה */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#18181b', padding: '2px 8px', borderRadius: 4 }}>
                 <ZoomOut size={12} color="#a1a1aa" style={{cursor: 'pointer'}} onClick={() => setPreviewZoom(Math.max(50, previewZoom - 20))} />
                 <span style={{ fontSize: 10, color: '#38bdf8' }}>זום מסך: {previewZoom}%</span>
@@ -401,7 +390,7 @@ export default function App() {
               style={{
                 ...styles.aspectCanvasBox,
                 aspectRatio: `${ASPECT_RATIOS[aspectKey].width} / ${ASPECT_RATIOS[aspectKey].height}`,
-                transform: `scale(${previewZoom / 100})`, // הפעלת הזום על המסך
+                transform: `scale(${previewZoom / 100})`,
                 transition: 'transform 0.2s ease-out'
               }}
             >
@@ -433,21 +422,13 @@ export default function App() {
                 <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', boxShadow: `inset 0 0 ${curSettings.vignette * 1.8}px rgba(0,0,0,${curSettings.vignette / 100})` }} />
               )}
 
-              {/* טשטוש נקודתי (Blur Masks) מרובים */}
               {(curSettings.blurMasks || []).map((mask) => (
                 <div
                   key={mask.id}
                   style={{
-                    position: 'absolute',
-                    left: mask.x,
-                    top: mask.y,
-                    width: mask.width,
-                    height: mask.height,
-                    backdropFilter: `blur(${mask.amount}px)`,
-                    borderRadius: 4,
-                    border: '1px dashed rgba(255,255,255,0.2)',
-                    pointerEvents: 'none',
-                    zIndex: 10
+                    position: 'absolute', left: mask.x, top: mask.y, width: mask.width, height: mask.height,
+                    backdropFilter: `blur(${mask.amount}px)`, borderRadius: 4, border: '1px dashed rgba(255,255,255,0.2)',
+                    pointerEvents: 'none', zIndex: 10
                   }}
                 />
               ))}
@@ -470,7 +451,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* רינדור טקסטים מרובים על המסך */}
               {texts.map((txt) => {
                 if (currentTime >= txt.startTime && currentTime <= txt.endTime) {
                   return (
