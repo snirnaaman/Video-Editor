@@ -1,25 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Download, Video, Image as ImageIcon, Music, ChevronLeft, ChevronRight, Monitor, ZoomIn, ZoomOut, FileJson, Columns, List, MessageSquare } from 'lucide-react';
-import { ASPECT_RATIOS, DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS, LUT_PRESETS } from './defaultState';
-import { VIEW_TOOLS } from './EditorIcons';
+import { Play, Pause, Download, Video, Image as ImageIcon, Music, ChevronLeft, ChevronRight, Monitor, ZoomIn, ZoomOut, FileJson, Columns, List, MessageSquare, Bot, Upload } from 'lucide-react';
+import { ASPECT_RATIOS, DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS, LUT_PRESETS, DEFAULT_CHORD_OVERLAY, DEFAULT_TEXT_OBJECT } from './defaultState';
 import InspectorPanel from './InspectorPanel';
 import TimelinePanel from './TimelinePanel';
-import { fetchAllSettled } from './utils';
+import AiCopilotPanel from './AiCopilotPanel';
 
 export default function App() {
   const videoRef = useRef(null); const bgVideoRef = useRef(null); const extAudioRef = useRef(null);
   const viewportRef = useRef(null);
+  const importFileRef = useRef(null);
 
   const [mediaPool, setMediaPool] = useState([]);
   const [mainVideoFile, setMainVideoFile] = useState(null);
   const [pipFile, setPipFile] = useState(null);
   const [extAudioFile, setExtAudioFile] = useState(null);
 
-  const [poolTab, setPoolTab] = useState('files'); // files | transcript | chords
+  const [poolTab, setPoolTab] = useState('files');
   const [aspectKey, setAspectKey] = useState('16:9');
   const [previewZoom, setPreviewZoom] = useState(100);
   const [showSafeZones, setShowSafeZones] = useState(false);
   const [showSplitWipe, setShowSplitWipe] = useState(false);
+  const [isAiOpen, setIsAiOpen] = useState(false); // פתיחת חלונית AI
 
   const [clips, setClips] = useState([]);
   const [history, setHistory] = useState([]);
@@ -33,7 +34,6 @@ export default function App() {
   const [canvasDrag, setCanvasDrag] = useState(null);
 
   const totalDuration = clips.reduce((acc, c) => acc + (c.trimEnd - c.trimStart), 0);
-
   const activeClip = (() => {
     if (clips.length === 0) return null;
     for (let i = 0; i < clips.length; i++) {
@@ -43,7 +43,7 @@ export default function App() {
   })();
   const selectedClip = clips.find((c) => c.id === selectedClipId) || activeClip;
 
-  const saveHistory = (currentClips) => setHistory((prev) => [...prev.slice(-15), JSON.parse(JSON.stringify(currentClips))]);
+  const saveHistory = (currentClips = clips) => setHistory((prev) => [...prev.slice(-15), JSON.parse(JSON.stringify(currentClips))]);
   const handleUndo = () => {
     if (history.length === 0) return;
     const previous = history[history.length - 1];
@@ -63,11 +63,100 @@ export default function App() {
       if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedClip && clips.length > 1) { e.preventDefault(); handleDeleteClip(selectedClip.id); } }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); handleUndo(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setIsAiOpen(prev => !prev); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
+  // -------------------------------------------------------------
+  // אדריכלות AI Co-Pilot & Webhook Dispatcher
+  // -------------------------------------------------------------
+  const dispatchAiActions = (actionsArray) => {
+    saveHistory(clips); // שומר מצב ל-Undo לפני הרצת פקודות ה-AI
+    let nextClips = [...clips];
+    let nextTexts = [...texts];
+    let nextChords = [...chords];
+
+    actionsArray.forEach(action => {
+      if (action.type === 'UPDATE_CLIP_SETTINGS') {
+        nextClips = nextClips.map(c => c.id === action.clipId ? { ...c, settings: { ...c.settings, ...action.patch } } : c);
+      } 
+      else if (action.type === 'ADD_KEYFRAMES') {
+        nextClips = nextClips.map(c => {
+          if (c.id === action.clipId) {
+            const kf = c.settings.keyframes || {};
+            return { ...c, settings: { ...c.settings, keyframes: { ...kf, [action.property]: action.points } } };
+          } return c;
+        });
+      }
+      else if (action.type === 'ADD_CHORD_OVERLAY') {
+        nextChords.push({ ...DEFAULT_CHORD_OVERLAY, id: 'ai-chord-' + Date.now() + Math.random(), ...action.chord });
+      }
+      else if (action.type === 'ADD_TEXT_LAYER') {
+        nextTexts.push({ ...DEFAULT_TEXT_OBJECT, id: 'ai-txt-' + Date.now() + Math.random(), ...action.text });
+      }
+    });
+
+    setClips(nextClips);
+    setTexts(nextTexts);
+    setChords(nextChords);
+  };
+
+  const handleSendAiPrompt = async (userPrompt, webhookUrl) => {
+    const payload = {
+      userPrompt,
+      selectionContext: { currentTime, selectedClipId: selectedClip?.id, aspectRatio: aspectKey, totalDuration },
+      projectState: { timelineClips: clips, pipSettings, textLayers: texts, chordOverlays: chords }
+    };
+
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error('שגיאת שרת: ' + res.status);
+    const data = await res.json();
+    
+    // מפעיל את הפקודות שה-AI בחר
+    if (data.actions && Array.isArray(data.actions)) {
+      dispatchAiActions(data.actions);
+    }
+    return data.assistantMessage;
+  };
+
+  // -------------------------------------------------------------
+  // פונקציות ייבוא וייצוא JSON רגילות
+  // -------------------------------------------------------------
+  const handleExportJSON = () => {
+    const data = { config: { aspectRatio: aspectKey, totalDuration }, clips, pipSettings, texts, chords };
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    a.download = `project-${Date.now()}.json`;
+    a.click();
+  };
+
+  const handleImportJSON = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (data.clips) setClips(data.clips);
+        if (data.texts) setTexts(data.texts);
+        if (data.chords) setChords(data.chords);
+        if (data.pipSettings) setPipSettings(data.pipSettings);
+        if (data.config?.aspectRatio) setAspectKey(data.config.aspectRatio);
+        alert('הפרויקט נטען בהצלחה!');
+      } catch (err) { alert('שגיאה בקריאת הקובץ.'); }
+    };
+    reader.readAsText(file);
+    e.target.value = null; // איפוס 
+  };
+
+  // --- שאר הפונקציות הקיימות ---
   const handleFileUpload = (e, type) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
@@ -89,7 +178,6 @@ export default function App() {
     setClips([firstClip]); setSelectedClipId(firstClip.id);
   };
 
-  // Smart Split (Blade Tool)
   const handleSplitClip = (splitTimelineTime = currentTime) => {
     const target = (() => {
        for (let i = 0; i < clips.length; i++) {
@@ -100,7 +188,6 @@ export default function App() {
     const offset = splitTimelineTime - target.timelineStart;
     const len = target.trimEnd - target.trimStart;
     if (offset <= 0.1 || offset >= len - 0.1) return;
-    
     saveHistory(clips);
     const splitPoint = Number((target.trimStart + offset).toFixed(3));
     const firstHalf = { ...target, id: 'clip-' + Math.random().toString(36).substring(2, 7), trimEnd: splitPoint, settings: JSON.parse(JSON.stringify(target.settings)) };
@@ -151,7 +238,6 @@ export default function App() {
     }
   };
 
-  // Smart Canvas Guides (Gizmo)
   const onLayerMouseDown = (e, target, mode, id = null) => {
     e.stopPropagation();
     let init = null;
@@ -166,11 +252,8 @@ export default function App() {
     const dx = (e.clientX - canvasDrag.startX) / (previewZoom / 100);
     const dy = (e.clientY - canvasDrag.startY) / (previewZoom / 100);
     const bounds = viewportRef.current.getBoundingClientRect();
-
     let nextX = canvasDrag.init.x + dx;
     let nextY = canvasDrag.init.y + dy;
-    
-    // Smart Snapping (מגנוט למרכז)
     if (Math.abs(nextX - (bounds.width/2)) < 15) nextX = bounds.width/2;
     if (Math.abs(nextY - (bounds.height/2)) < 15) nextY = bounds.height/2;
 
@@ -183,16 +266,6 @@ export default function App() {
   };
 
   const buildFilter = (s) => `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturate}%) hue-rotate(${s.hueRotate}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''}`;
-
-  const handleExportJSON = () => {
-    const data = { config: { aspectRatio: aspectKey, totalDuration }, clips, pipSettings, texts, chords };
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    a.download = `project-${Date.now()}.json`;
-    a.click();
-    alert('הפרויקט מיוצא. העבר אותו לסוכן ה-AI לעיבוד רינדור בשרת.');
-  };
-
   const fmtTime = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${Math.floor(s%60).toString().padStart(2,'0')}`;
   const cSettings = activeClip?.settings || DEFAULT_CLIP_SETTINGS;
 
@@ -208,18 +281,32 @@ export default function App() {
             ))}
           </div>
         </div>
-        <button style={styles.exportBtn} onClick={handleExportJSON} disabled={clips.length === 0}><FileJson size={15} /><span>ייצא ל-AI</span></button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* ייבוא פרויקט JSON */}
+          <input type="file" accept=".json" ref={importFileRef} onChange={handleImportJSON} style={{ display: 'none' }} />
+          <button style={styles.secondaryBtn} onClick={() => importFileRef.current?.click()} title="יבוא מ-JSON">
+            <Upload size={14} /> ייבוא מ-AI
+          </button>
+          
+          <button style={styles.exportBtn} onClick={handleExportJSON} disabled={clips.length === 0}>
+            <FileJson size={14} /> ייצוא ל-AI
+          </button>
+          
+          {/* כפתור פתיחת ה-AI Co-Pilot */}
+          <button style={styles.aiBtn} onClick={() => setIsAiOpen(true)} title="סוכן AI (Ctrl+K)">
+            <Bot size={14} /> AI Co-Pilot
+          </button>
+        </div>
       </header>
 
       <div style={styles.workspaceGrid}>
-        {/* Media Pool המתקדם */}
         <aside style={styles.mediaPoolPanel}>
           <div style={styles.tabsRow}>
             <button style={{...styles.poolTab, borderBottomColor: poolTab==='files'?'#38bdf8':'transparent'}} onClick={()=>setPoolTab('files')}><Columns size={12}/> מדיה</button>
             <button style={{...styles.poolTab, borderBottomColor: poolTab==='transcript'?'#38bdf8':'transparent'}} onClick={()=>setPoolTab('transcript')}><MessageSquare size={12}/> תמלול</button>
             <button style={{...styles.poolTab, borderBottomColor: poolTab==='chords'?'#38bdf8':'transparent'}} onClick={()=>setPoolTab('chords')}><List size={12}/> אקורדים</button>
           </div>
-          
           <div style={styles.poolBody}>
              {poolTab === 'files' && (
                <>
@@ -234,7 +321,6 @@ export default function App() {
                         <div style={styles.thumbBox}>
                           {item.type === 'video' && <video src={item.url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                           {item.type === 'pip' && (item.isVideo ? <video src={item.url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <img src={item.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />)}
-                          {item.type === 'audio' && <Music size={24} color="#10b981" />}
                         </div>
                         <div style={{ fontSize: 10, padding: '3px 6px', overflow: 'hidden', whiteSpace: 'nowrap' }}>{item.name}</div>
                       </div>
@@ -242,96 +328,48 @@ export default function App() {
                   </div>
                </>
              )}
-             {poolTab === 'transcript' && <div style={{color:'#71717a', fontSize: 12, textAlign: 'center', marginTop: 20}}>חיבור ל-Gemini / Web Speech API (טיוטה)</div>}
-             {poolTab === 'chords' && (
-               <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
-                 {['Am','C','G','F','Em','E','A','D'].map(chord => (
-                   <button key={chord} style={styles.miniBtn} onClick={() => setChords([...chords, { ...DEFAULT_CHORD_OVERLAY, id: 'c-'+Date.now(), chordName: chord, startTime: currentTime, endTime: currentTime+4 }])}>+{chord}</button>
-                 ))}
-               </div>
-             )}
           </div>
         </aside>
 
         <main style={styles.monitorPanel}>
-          <div style={styles.panelTitleBar}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>Preview</span>
-              <div style={{ display: 'flex', gap: 6, backgroundColor: '#18181b', padding: '2px 8px', borderRadius: 4 }}>
-                <ZoomOut size={12} color="#a1a1aa" style={{cursor: 'pointer'}} onClick={() => setPreviewZoom(Math.max(50, previewZoom - 20))} />
-                <span style={{ fontSize: 10, color: '#38bdf8' }}>{previewZoom}%</span>
-                <ZoomIn size={12} color="#a1a1aa" style={{cursor: 'pointer'}} onClick={() => setPreviewZoom(Math.min(300, previewZoom + 20))} />
-              </div>
-              <div style={{ display: 'flex', gap: 4 }}>
-                <button style={{...styles.iconBtn, backgroundColor: showSafeZones?'#2563eb':'transparent'}} onClick={()=>setShowSafeZones(!showSafeZones)} title="מסגרות בטחון (Safe Zones)"><Grid3x3 size={14}/></button>
-                <button style={{...styles.iconBtn, backgroundColor: showSplitWipe?'#2563eb':'transparent'}} onClick={()=>setShowSplitWipe(!showSplitWipe)} title="השוואת צבע ללא פילטר (Split Screen)"><SplitSquareHorizontal size={14}/></button>
-              </div>
-            </div>
-            <span style={{ fontFamily: 'monospace', color: '#38bdf8', direction: 'ltr' }}>{fmtTime(currentTime)}</span>
-          </div>
-
           <div style={styles.monitorOuterStage}>
             <div ref={viewportRef} style={{ ...styles.aspectCanvasBox, aspectRatio: `${ASPECT_RATIOS[aspectKey].width} / ${ASPECT_RATIOS[aspectKey].height}`, transform: `scale(${previewZoom / 100})` }}>
-              
               {mainVideoFile && (
-                <>
-                  <video
-                    ref={videoRef} src={mainVideoFile.url} onLoadedMetadata={handleVideoMetadata} onTimeUpdate={handleTimeUpdate}
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: cSettings.fitMode === 'cover' ? 'cover' : 'contain', filter: buildFilter(cSettings), opacity: cSettings.opacity / 100, transform: `translate(${cSettings.posX}px, ${cSettings.posY}px) rotate(${cSettings.rotation}deg) scale(${ (cSettings.mirrorH ? -1 : 1) * (cSettings.scale / 100) })`, clipPath: showSplitWipe ? 'inset(0 50% 0 0)' : 'none' }}
-                  />
-                  {showSplitWipe && (
-                    <video
-                      src={mainVideoFile.url} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: cSettings.fitMode === 'cover' ? 'cover' : 'contain', filter: 'none', transform: `translate(${cSettings.posX}px, ${cSettings.posY}px) rotate(${cSettings.rotation}deg) scale(${ (cSettings.mirrorH ? -1 : 1) * (cSettings.scale / 100) })`, clipPath: 'inset(0 0 0 50%)', pointerEvents: 'none' }}
-                    />
-                  )}
-                </>
+                <video ref={videoRef} src={mainVideoFile.url} onLoadedMetadata={handleVideoMetadata} onTimeUpdate={handleTimeUpdate} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: cSettings.fitMode === 'cover' ? 'cover' : 'contain', filter: buildFilter(cSettings), opacity: cSettings.opacity / 100, transform: `translate(${cSettings.posX}px, ${cSettings.posY}px) rotate(${cSettings.rotation}deg) scale(${ (cSettings.mirrorH ? -1 : 1) * (cSettings.scale / 100) })` }} />
               )}
-
-              {/* Safe Zones */}
-              {showSafeZones && (
-                <div style={{position:'absolute', inset:'10%', border:'1px dotted rgba(255,255,255,0.5)', pointerEvents:'none', zIndex:50}}>
-                  <div style={{position:'absolute', top:'50%', left:0, right:0, borderTop:'1px dotted rgba(255,255,255,0.3)'}}/>
-                  <div style={{position:'absolute', left:'50%', top:0, bottom:0, borderLeft:'1px dotted rgba(255,255,255,0.3)'}}/>
-                </div>
-              )}
-
               {pipFile && currentTime >= pipSettings.startTime && currentTime <= pipSettings.endTime && (
                 <div onMouseDown={(e) => onLayerMouseDown(e, 'pip', 'drag')} style={{ position: 'absolute', left: pipSettings.x, top: pipSettings.y, width: pipSettings.width, height: pipSettings.height, opacity: pipSettings.opacity / 100, transform: `rotate(${pipSettings.rotation}deg)`, borderRadius: pipSettings.borderRadius, border: `2px solid ${canvasDrag?.target==='pip'?'#38bdf8':pipSettings.borderColor}`, cursor: 'grab', zIndex: 20 }}>
                   {pipFile.isVideo ? <video src={pipFile.url} autoPlay loop muted style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }} /> : <img src={pipFile.url} alt="PiP" style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none' }} />}
                   <div onMouseDown={(e) => onLayerMouseDown(e, 'pip', 'resize')} style={{ position: 'absolute', right: -4, bottom: -4, width: 12, height: 12, backgroundColor: '#38bdf8', cursor: 'nwse-resize' }} />
                 </div>
               )}
-
-              {chords.map((c) => {
-                if (currentTime >= c.startTime && currentTime <= c.endTime) {
-                  return (
-                    <div key={c.id} onMouseDown={(e) => onLayerMouseDown(e, 'chord', 'drag', c.id)} style={{ position: 'absolute', left: c.x, top: c.y, width: 80, height: 100, backgroundColor: 'rgba(0,0,0,0.6)', border: `1px solid ${canvasDrag?.id===c.id?'#38bdf8':'#0ea5e9'}`, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24, fontWeight: 'bold', cursor: 'grab', zIndex: 24 }}>{c.chordName}</div>
-                  );
-                } return null;
-              })}
-
-              {texts.map((txt) => {
-                if (currentTime >= txt.startTime && currentTime <= txt.endTime) {
-                  return (
-                    <div key={txt.id} onMouseDown={(e) => onLayerMouseDown(e, 'text', 'drag', txt.id)} style={{ position: 'absolute', left: txt.x, top: txt.y, fontSize: txt.fontSize, color: txt.color, backgroundColor: txt.bgColor, padding: '6px 12px', borderRadius: 6, cursor: 'grab', zIndex: 25, border: `1px dashed ${canvasDrag?.id===txt.id?'#38bdf8':'rgba(255,255,255,0.35)'}` }}>{txt.content}</div>
-                  );
-                } return null;
-              })}
-
+              {chords.map((c) => currentTime >= c.startTime && currentTime <= c.endTime && (
+                <div key={c.id} onMouseDown={(e) => onLayerMouseDown(e, 'chord', 'drag', c.id)} style={{ position: 'absolute', left: c.x, top: c.y, width: 80, height: 100, backgroundColor: 'rgba(0,0,0,0.6)', border: `1px solid ${canvasDrag?.id===c.id?'#38bdf8':'#0ea5e9'}`, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 24, fontWeight: 'bold', cursor: 'grab', zIndex: 24 }}>{c.chordName}</div>
+              ))}
+              {texts.map((txt) => currentTime >= txt.startTime && currentTime <= txt.endTime && (
+                <div key={txt.id} onMouseDown={(e) => onLayerMouseDown(e, 'text', 'drag', txt.id)} style={{ position: 'absolute', left: txt.x, top: txt.y, fontSize: txt.fontSize, color: txt.color, backgroundColor: txt.bgColor, padding: '6px 12px', borderRadius: 6, cursor: 'grab', zIndex: 25, border: `1px dashed ${canvasDrag?.id===txt.id?'#38bdf8':'rgba(255,255,255,0.35)'}` }}>{txt.content}</div>
+              ))}
             </div>
           </div>
-
           <div style={styles.transportBar}>
-            <button style={styles.transportBtn} onClick={() => handleSeek(currentTime - 1/30)}><ChevronRight size={16} /></button>
             <button style={{ ...styles.transportBtn, backgroundColor: '#2563eb' }} onClick={togglePlay}>{isPlaying ? <Pause size={16} /> : <Play size={16} />}</button>
-            <button style={styles.transportBtn} onClick={() => handleSeek(currentTime + 1/30)}><ChevronLeft size={16} /></button>
           </div>
         </main>
 
-        <InspectorPanel selectedClip={selectedClip} onUpdateClip={handleUpdateClip} onDeleteClip={handleDeleteClip} pipSettings={pipSettings} onUpdatePip={setPipSettings} hasPip={Boolean(pipFile)} texts={texts} onUpdateTexts={setTexts} chords={chords} onUpdateChords={setChords} videoDuration={totalDuration} />
+        <InspectorPanel selectedClip={selectedClip} onUpdateClip={(id, newSet) => handleUpdateClip(id, newSet)} onDeleteClip={handleDeleteClip} pipSettings={pipSettings} onUpdatePip={setPipSettings} hasPip={Boolean(pipFile)} texts={texts} onUpdateTexts={setTexts} chords={chords} onUpdateChords={setChords} videoDuration={totalDuration} currentTime={currentTime} />
       </div>
 
       <TimelinePanel duration={totalDuration} currentTime={currentTime} onSeek={handleSeek} clips={clips} selectedClipId={selectedClip?.id} onSelectClip={setSelectedClipId} onSplitClip={handleSplitClip} onDeleteClip={handleDeleteClip} onUndo={handleUndo} canUndo={history.length > 0} pipSettings={pipSettings} onUpdatePip={setPipSettings} hasPip={Boolean(pipFile)} pipName={pipFile?.name} texts={texts} onUpdateTexts={setTexts} chords={chords} onUpdateChords={setChords} audioName={extAudioFile?.name} />
+      
+      {/* פאנל הסוכן המחובר ל-n8n */}
+      <AiCopilotPanel 
+        isOpen={isAiOpen} 
+        onClose={() => setIsAiOpen(false)} 
+        currentTime={currentTime} 
+        selectedClip={selectedClip} 
+        hasPip={Boolean(pipFile)} 
+        onSendPrompt={handleSendAiPrompt} 
+      />
     </div>
   );
 }
@@ -342,7 +380,9 @@ const styles = {
   brandBadge: { backgroundColor: '#2563eb', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 4 },
   aspectSwitcher: { display: 'flex', alignItems: 'center', gap: 4, backgroundColor: '#1c1c1f', padding: '3px 6px', borderRadius: 6, border: '1px solid #27272a' },
   aspectBtn: { border: 'none', padding: '3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer' },
+  secondaryBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#27272a', border: '1px solid #3f3f46', color: '#fff', padding: '6px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer' },
   exportBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#059669', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' },
+  aiBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#8b5cf6', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 10px rgba(139, 92, 246, 0.4)' },
   workspaceGrid: { display: 'flex', flex: 1, minHeight: 0, borderBottom: '1px solid #27272a', overflow: 'hidden' },
   mediaPoolPanel: { width: 250, backgroundColor: '#1c1c1f', borderLeft: '1px solid #27272a', display: 'flex', flexDirection: 'column', minHeight: 0, flexShrink: 0 },
   tabsRow: { display: 'flex', backgroundColor: '#141416', borderBottom: '1px solid #27272a' },
@@ -352,10 +392,8 @@ const styles = {
   mediaCard: { backgroundColor: '#27272a', borderRadius: 4, overflow: 'hidden', border: '1px solid #3f3f46', cursor: 'pointer', height: 84, display: 'flex', flexDirection: 'column' },
   thumbBox: { flex: 1, backgroundColor: '#09090b', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   monitorPanel: { flex: 1, backgroundColor: '#0c0c0e', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden' },
-  panelTitleBar: { height: 32, backgroundColor: '#141416', borderBottom: '1px solid #27272a', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px', fontSize: 12, fontWeight: 600, color: '#a1a1aa', flexShrink: 0 },
-  iconBtn: { border: 'none', padding: '4px', borderRadius: 4, cursor: 'pointer', color: '#e4e4e7', display: 'flex' },
   monitorOuterStage: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, minHeight: 0, overflow: 'hidden' },
-  aspectCanvasBox: { height: '100%', maxWidth: '100%', backgroundColor: '#000', border: '1px solid #3f3f46', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 10px 30px rgba(0,0,0,0.8)', transition: 'transform 0.2s ease-out' },
+  aspectCanvasBox: { height: '100%', maxWidth: '100%', backgroundColor: '#000', border: '1px solid #3f3f46', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 10px 30px rgba(0,0,0,0.8)' },
   transportBar: { height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, borderTop: '1px solid #27272a', backgroundColor: '#18181b', flexShrink: 0 },
   transportBtn: { backgroundColor: '#27272a', border: 'none', color: '#fff', width: 30, height: 30, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }
 };
