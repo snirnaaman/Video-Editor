@@ -270,6 +270,12 @@ export default function App() {
   const buildFilter = (s) => `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturate}%) hue-rotate(${s.hueRotate}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''}`;
   const fmtTime = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${Math.floor(s%60).toString().padStart(2,'0')}`;
   const cSettings = activeClip?.settings || DEFAULT_CLIP_SETTINGS;
+  const currentProjectData = {
+  config: { aspectRatio: aspectKey, format: ASPECT_RATIOS[aspectKey], totalDuration },
+  clips, pipSettings, texts, chords,
+  mainVideoFile, pipFile, audioFile: extAudioFile,
+  currentTime
+};
 
   return (
     <div style={styles.appShell} onMouseMove={onViewportMouseMove} onMouseUp={() => setCanvasDrag(null)}>
