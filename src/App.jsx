@@ -4,6 +4,7 @@ import { ASPECT_RATIOS, DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS, LUT_PRESETS
 import InspectorPanel from './InspectorPanel';
 import TimelinePanel from './TimelinePanel';
 import AiCopilotPanel from './AiCopilotPanel';
+import ExportModal from './ExportModal';
 
 export default function App() {
   const videoRef = useRef(null); const bgVideoRef = useRef(null); const extAudioRef = useRef(null);
