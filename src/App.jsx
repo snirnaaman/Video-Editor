@@ -1,8 +1,8 @@
 import React, { useState, useRef } from 'react';
 import {
   Play, Pause, Scissors, FlipHorizontal, Download, ZoomIn, ZoomOut,
-  Plus, Music, Video, Image as ImageIcon, ChevronLeft, ChevronRight,
-  Sliders, Trash2, Layers, Volume2
+  Music, Video, Image as ImageIcon, ChevronLeft, ChevronRight,
+  Sliders, Trash2, Volume2, Layers, Maximize2
 } from 'lucide-react';
 
 export default function App() {
@@ -23,7 +23,7 @@ export default function App() {
 
   // הגדרות עריכה (Inspector)
   const [isMirrored, setIsMirrored] = useState(true);
-  const [pipRect, setPipRect] = useState({ x: 24, y: 24, width: 220 });
+  const [pipRect, setPipRect] = useState({ x: 20, y: 20, width: 180 });
   const [isDraggingPip, setIsDraggingPip] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [transitionType, setTransitionType] = useState('none');
@@ -33,22 +33,17 @@ export default function App() {
   // מקטעי חיתוך בציר הזמן
   const [cuts, setCuts] = useState([]);
 
-  // העלאת קבצים למאגר המדיה (Media Pool)
   const handleFileUpload = (e, type) => {
     const files = Array.from(e.target.files);
-    const newItems = files.map((file) => {
-      const url = URL.createObjectURL(file);
-      return {
-        id: Math.random().toString(36).substr(2, 9),
-        name: file.name,
-        type, // 'video' | 'pip' | 'audio'
-        url
-      };
-    });
+    const newItems = files.map((file) => ({
+      id: Math.random().toString(36).substring(2, 9),
+      name: file.name,
+      type,
+      url: URL.createObjectURL(file)
+    }));
 
     setMediaPool((prev) => [...prev, ...newItems]);
 
-    // הצבה אוטומטית אם הערוץ ריק
     newItems.forEach((item) => {
       if (item.type === 'video' && !activeMainVideo) setActiveMainVideo(item);
       if (item.type === 'pip' && !activePip) setActivePip(item);
@@ -56,7 +51,6 @@ export default function App() {
     });
   };
 
-  // פקדי ניגון ודילוג פריימים (30fps = 0.0333s)
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (isPlaying) videoRef.current.pause();
@@ -80,7 +74,6 @@ export default function App() {
     return `00:${mins}:${secs}:${frames}`;
   };
 
-  // גרירת חלון ה-PiP ישירות על המסך
   const startDragPip = (e) => {
     e.stopPropagation();
     setIsDraggingPip(true);
@@ -91,13 +84,12 @@ export default function App() {
     if (!isDraggingPip || !canvasBoxRef.current) return;
     const bounds = canvasBoxRef.current.getBoundingClientRect();
     const newX = Math.max(0, Math.min(bounds.width - pipRect.width, e.clientX - dragOffset.x));
-    const newY = Math.max(0, Math.min(bounds.height - 100, e.clientY - dragOffset.y));
+    const newY = Math.max(0, Math.min(bounds.height - 80, e.clientY - dragOffset.y));
     setPipRect((prev) => ({ ...prev, x: newX, y: newY }));
   };
 
   const stopDragPip = () => setIsDraggingPip(false);
 
-  // חיתוך בנקודת הסמן
   const handleSplitAtPlayhead = () => {
     const cutPoint = Number(currentTime.toFixed(2));
     if (!cuts.includes(cutPoint) && cutPoint > 0 && cutPoint < duration) {
@@ -150,10 +142,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* אזור עבודה עליון מחולק ל-3 עמודות קבועות */}
+      {/* אזור עבודה עליון מחולק ל-3 פאנלים קבועים */}
       <div style={styles.workspaceGrid}>
         
-        {/* 1. עמודה ימנית: Media Pool (ספריית קבצים ותמונות ממוזערות) */}
+        {/* פאנל 1: Media Pool */}
         <aside style={styles.mediaPoolPanel}>
           <div style={styles.panelTitleBar}>
             <span>Media Pool (מאגר קבצים)</span>
@@ -203,7 +195,7 @@ export default function App() {
           </div>
         </aside>
 
-        {/* 2. עמודה מרכזית: מוניטור תצוגה מקדימה נעול */}
+        {/* פאנל 2: מוניטור תצוגה מקדימה נעול */}
         <main style={styles.monitorPanel}>
           <div style={styles.panelTitleBar}>
             <span>Timeline Preview</span>
@@ -212,7 +204,7 @@ export default function App() {
             </span>
           </div>
 
-          {/* תיבת המסך הנעולה - מונעת בריחה של הווידאו */}
+          {/* תיבת המסך הנעולה לחלוטין */}
           <div style={styles.monitorViewport} ref={canvasBoxRef}>
             {activeMainVideo ? (
               <video
@@ -222,7 +214,7 @@ export default function App() {
                 onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
                 onEnded={() => setIsPlaying(false)}
                 style={{
-                  ...styles.boundedVideo,
+                  ...styles.lockedVideoElement,
                   transform: isMirrored ? 'scaleX(-1)' : 'none'
                 }}
               />
@@ -252,7 +244,7 @@ export default function App() {
             )}
           </div>
 
-          {/* פקדי נגן מדויקים מתחת למוניטור */}
+          {/* פקדי נגן מתחת למוניטור */}
           <div style={styles.transportBar}>
             <button style={styles.transportBtn} onClick={() => stepFrame(-1)} title="פריים אחורה">
               <ChevronRight size={16} />
@@ -266,7 +258,7 @@ export default function App() {
           </div>
         </main>
 
-        {/* 3. עמודה שמאלית: Inspector (הגדרות שכבה, מעברים ושמע) */}
+        {/* פאנל 3: Inspector (הגדרות שכבה, מעברים ושמע) */}
         <aside style={styles.inspectorPanel}>
           <div style={styles.panelTitleBar}>
             <span>Inspector (הגדרות)</span>
@@ -281,7 +273,7 @@ export default function App() {
                 type="range" min="80" max="420" value={pipRect.width}
                 onChange={(e) => setPipRect({ ...pipRect, width: Number(e.target.value) })}
               />
-              <span style={{ fontSize: 11, color: '#71717a' }}>טיפ: גרור את החלון ישירות על גבי הווידאו</span>
+              <span style={{ fontSize: 11, color: '#71717a' }}>גרור את החלון ישירות על גבי הווידאו</span>
             </div>
 
             <div style={styles.inspectorGroup}>
@@ -309,7 +301,7 @@ export default function App() {
         </aside>
       </div>
 
-      {/* 4. חלק תחתון נעול: ציר זמן רב-ערוצי (Timeline) */}
+      {/* פאנל 4: ציר זמן רב-ערוצי (Timeline) */}
       <section style={styles.timelineDock}>
         <div style={styles.timelineTools}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -332,14 +324,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* מסילות העריכה */}
         <div style={styles.tracksWrapper} onClick={handleTimelineScrub}>
-          {/* קו סמן הזמן האדום */}
           <div style={{ ...styles.playheadLine, left: `${(currentTime / (duration || 1)) * 100}%` }}>
             <div style={styles.playheadCap} />
           </div>
 
-          {/* סימוני חיתוך שבוצעו */}
           {cuts.map((cutSec, i) => (
             <div
               key={i}
@@ -452,8 +441,9 @@ const styles = {
   workspaceGrid: {
     display: 'flex',
     flex: 1,
-    minHeight: 0, // מונע מהווידאו לדחוף את ציר הזמן החוצה
-    borderBottom: '1px solid #27272a'
+    minHeight: 0,
+    borderBottom: '1px solid #27272a',
+    overflow: 'hidden'
   },
   mediaPoolPanel: {
     width: 280,
@@ -461,7 +451,8 @@ const styles = {
     borderLeft: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column',
-    minHeight: 0
+    minHeight: 0,
+    flexShrink: 0
   },
   panelTitleBar: {
     height: 32,
@@ -480,7 +471,8 @@ const styles = {
     display: 'flex',
     gap: 6,
     padding: 8,
-    borderBottom: '1px solid #27272a'
+    borderBottom: '1px solid #27272a',
+    flexShrink: 0
   },
   miniUploadBtn: {
     flex: 1,
@@ -497,4 +489,230 @@ const styles = {
   },
   mediaGrid: {
     display: 'grid',
-    grid
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: 8,
+    padding: 10,
+    overflowY: 'auto',
+    flex: 1
+  },
+  emptyPoolMsg: {
+    gridColumn: '1 / -1',
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#52525b',
+    marginTop: 24
+  },
+  mediaCard: {
+    backgroundColor: '#27272a',
+    borderRadius: 4,
+    overflow: 'hidden',
+    border: '1px solid #3f3f46',
+    cursor: 'pointer',
+    height: 92,
+    display: 'flex',
+    flexDirection: 'column'
+  },
+  thumbBox: {
+    flex: 1,
+    backgroundColor: '#09090b',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden'
+  },
+  thumbMedia: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover'
+  },
+  thumbLabel: {
+    fontSize: 10,
+    padding: '3px 6px',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    backgroundColor: '#18181b'
+  },
+  monitorPanel: {
+    flex: 1,
+    backgroundColor: '#121214',
+    display: 'flex',
+    flexDirection: 'column',
+    minWidth: 0,
+    minHeight: 0,
+    overflow: 'hidden'
+  },
+  monitorViewport: {
+    flex: 1,
+    backgroundColor: '#000',
+    margin: 10,
+    borderRadius: 4,
+    border: '1px solid #27272a',
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    minHeight: 0
+  },
+  lockedVideoElement: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain'
+  },
+  transportBar: {
+    height: 40,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    borderTop: '1px solid #27272a',
+    backgroundColor: '#18181b',
+    flexShrink: 0
+  },
+  transportBtn: {
+    backgroundColor: '#27272a',
+    border: 'none',
+    color: '#fff',
+    width: 30,
+    height: 30,
+    borderRadius: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer'
+  },
+  inspectorPanel: {
+    width: 260,
+    backgroundColor: '#1c1c1f',
+    borderRight: '1px solid #27272a',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 0,
+    flexShrink: 0
+  },
+  inspectorBody: {
+    padding: 12,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16
+  },
+  inspectorGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingBottom: 12,
+    borderBottom: '1px solid #27272a'
+  },
+  groupTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: '#38bdf8'
+  },
+  controlLabel: {
+    fontSize: 11,
+    color: '#a1a1aa'
+  },
+  darkSelect: {
+    backgroundColor: '#27272a',
+    color: '#fff',
+    border: '1px solid #3f3f46',
+    padding: '6px 8px',
+    borderRadius: 4,
+    fontSize: 12
+  },
+  timelineDock: {
+    height: 210,
+    backgroundColor: '#141416',
+    display: 'flex',
+    flexDirection: 'column',
+    flexShrink: 0
+  },
+  timelineTools: {
+    height: 36,
+    backgroundColor: '#1c1c1f',
+    borderBottom: '1px solid #27272a',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0 14px',
+    flexShrink: 0
+  },
+  bladeBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#27272a',
+    border: '1px solid #3f3f46',
+    color: '#e4e4e7',
+    padding: '4px 10px',
+    borderRadius: 4,
+    fontSize: 11,
+    cursor: 'pointer'
+  },
+  tracksWrapper: {
+    flex: 1,
+    position: 'relative',
+    cursor: 'pointer',
+    direction: 'ltr',
+    overflow: 'hidden'
+  },
+  playheadLine: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 2,
+    backgroundColor: '#ef4444',
+    zIndex: 15,
+    pointerEvents: 'none'
+  },
+  playheadCap: {
+    width: 10,
+    height: 10,
+    backgroundColor: '#ef4444',
+    borderRadius: '50%',
+    marginLeft: -4
+  },
+  trackLane: {
+    display: 'flex',
+    height: 46,
+    borderBottom: '1px solid #27272a',
+    direction: 'rtl'
+  },
+  trackHeader: {
+    width: 90,
+    backgroundColor: '#18181b',
+    borderLeft: '1px solid #27272a',
+    display: 'flex',
+    alignItems: 'center',
+    paddingRight: 10,
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#71717a',
+    flexShrink: 0
+  },
+  trackBody: {
+    flex: 1,
+    position: 'relative',
+    backgroundColor: '#121214',
+    direction: 'ltr'
+  },
+  timelineClip: {
+    position: 'absolute',
+    top: 5,
+    bottom: 5,
+    borderRadius: 4,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 10px',
+    fontSize: 11,
+    color: '#fff',
+    border: '1px solid rgba(255,255,255,0.2)',
+    overflow: 'hidden',
+    whiteSpace: 'nowrap'
+  }
+};
