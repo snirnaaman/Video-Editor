@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Pause, Download, Video, Image as ImageIcon, Music, ChevronLeft, ChevronRight, Monitor, ZoomIn, ZoomOut, FileJson, Columns, List, MessageSquare, Bot, Upload } from 'lucide-react';
+import { Play, Pause, DownloadCloud, Video, Image as ImageIcon, Music, ChevronLeft, ChevronRight, Monitor, ZoomIn, ZoomOut, FileJson, Columns, List, MessageSquare, Bot, Upload } from 'lucide-react';
 import { ASPECT_RATIOS, DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS, LUT_PRESETS, DEFAULT_CHORD_OVERLAY, DEFAULT_TEXT_OBJECT } from './defaultState';
 import InspectorPanel from './InspectorPanel';
 import TimelinePanel from './TimelinePanel';
@@ -22,7 +22,7 @@ export default function App() {
   const [showSafeZones, setShowSafeZones] = useState(false);
   const [showSplitWipe, setShowSplitWipe] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false); // פתיחת חלונית AI
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false); // פתיחת מודאל ייצוא
 
   const [clips, setClips] = useState([]);
   const [history, setHistory] = useState([]);
@@ -131,14 +131,6 @@ export default function App() {
   // -------------------------------------------------------------
   // פונקציות ייבוא וייצוא JSON רגילות
   // -------------------------------------------------------------
-  const handleExportJSON = () => {
-    const data = { config: { aspectRatio: aspectKey, totalDuration }, clips, pipSettings, texts, chords };
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-    a.download = `project-${Date.now()}.json`;
-    a.click();
-  };
-
   const handleImportJSON = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -268,14 +260,14 @@ export default function App() {
   };
 
   const buildFilter = (s) => `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturate}%) hue-rotate(${s.hueRotate}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''}`;
-  const fmtTime = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${Math.floor(s%60).toString().padStart(2,'0')}`;
-  const cSettings = activeClip?.settings || DEFAULT_CLIP_SETTINGS;
+
+  // אובייקט הנתונים שמועבר למודאל הייצוא וההמרה
   const currentProjectData = {
-  config: { aspectRatio: aspectKey, format: ASPECT_RATIOS[aspectKey], totalDuration },
-  clips, pipSettings, texts, chords,
-  mainVideoFile, pipFile, audioFile: extAudioFile,
-  currentTime
-};
+    config: { aspectRatio: aspectKey, format: ASPECT_RATIOS[aspectKey], totalDuration },
+    clips, pipSettings, texts, chords,
+    mainVideoFile, pipFile, audioFile: extAudioFile,
+    currentTime
+  };
 
   return (
     <div style={styles.appShell} onMouseMove={onViewportMouseMove} onMouseUp={() => setCanvasDrag(null)}>
@@ -291,14 +283,15 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* ייבוא פרויקט JSON */}
+          {/* ייבוא פרויקט JSON מוסתר */}
           <input type="file" accept=".json" ref={importFileRef} onChange={handleImportJSON} style={{ display: 'none' }} />
-          <button style={styles.secondaryBtn} onClick={() => importFileRef.current?.click()} title="יבוא מ-JSON">
-            <Upload size={14} /> ייבוא מ-AI
+          <button style={styles.secondaryBtn} onClick={() => importFileRef.current?.click()} title="יבוא פרויקט מקומי או מ-AI">
+            <Upload size={14} /> ייבוא
           </button>
           
-          <button style={styles.exportBtn} onClick={handleExportJSON} disabled={clips.length === 0}>
-            <FileJson size={14} /> ייצוא ל-AI
+          {/* כפתור ה-Export המרכזי */}
+          <button style={styles.exportBtn} onClick={() => setIsExportModalOpen(true)} disabled={clips.length === 0}>
+            <DownloadCloud size={14} /> ייצוא והורדת סרטון
           </button>
           
           {/* כפתור פתיחת ה-AI Co-Pilot */}
@@ -369,7 +362,7 @@ export default function App() {
 
       <TimelinePanel duration={totalDuration} currentTime={currentTime} onSeek={handleSeek} clips={clips} selectedClipId={selectedClip?.id} onSelectClip={setSelectedClipId} onSplitClip={handleSplitClip} onDeleteClip={handleDeleteClip} onUndo={handleUndo} canUndo={history.length > 0} pipSettings={pipSettings} onUpdatePip={setPipSettings} hasPip={Boolean(pipFile)} pipName={pipFile?.name} texts={texts} onUpdateTexts={setTexts} chords={chords} onUpdateChords={setChords} audioName={extAudioFile?.name} />
       
-      {/* פאנל הסוכן המחובר ל-n8n */}
+      {/* פאנל סוכן ה-AI */}
       <AiCopilotPanel 
         isOpen={isAiOpen} 
         onClose={() => setIsAiOpen(false)} 
@@ -377,6 +370,13 @@ export default function App() {
         selectedClip={selectedClip} 
         hasPip={Boolean(pipFile)} 
         onSendPrompt={handleSendAiPrompt} 
+      />
+
+      {/* מרכז ייצוא והורדה */}
+      <ExportModal 
+        isOpen={isExportModalOpen} 
+        onClose={() => setIsExportModalOpen(false)} 
+        projectData={currentProjectData} 
       />
     </div>
   );
@@ -388,9 +388,9 @@ const styles = {
   brandBadge: { backgroundColor: '#2563eb', color: '#fff', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 4 },
   aspectSwitcher: { display: 'flex', alignItems: 'center', gap: 4, backgroundColor: '#1c1c1f', padding: '3px 6px', borderRadius: 6, border: '1px solid #27272a' },
   aspectBtn: { border: 'none', padding: '3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer' },
-  secondaryBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#27272a', border: '1px solid #3f3f46', color: '#fff', padding: '6px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer' },
-  exportBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#059669', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' },
-  aiBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#8b5cf6', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 10px rgba(139, 92, 246, 0.4)' },
+  secondaryBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#27272a', border: '1px solid #3f3f46', color: '#fff', padding: '6px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer' },
+  exportBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#2563eb', border: '1px solid #1d4ed8', color: '#fff', padding: '6px 16px', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(37, 99, 235, 0.2)' },
+  aiBtn: { display: 'flex', alignItems: 'center', gap: 6, backgroundColor: '#8b5cf6', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 10px rgba(139, 92, 246, 0.4)' },
   workspaceGrid: { display: 'flex', flex: 1, minHeight: 0, borderBottom: '1px solid #27272a', overflow: 'hidden' },
   mediaPoolPanel: { width: 250, backgroundColor: '#1c1c1f', borderLeft: '1px solid #27272a', display: 'flex', flexDirection: 'column', minHeight: 0, flexShrink: 0 },
   tabsRow: { display: 'flex', backgroundColor: '#141416', borderBottom: '1px solid #27272a' },
