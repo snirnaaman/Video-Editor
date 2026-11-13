@@ -3,9 +3,9 @@ import * as WebMMuxer from 'webm-muxer';
 import { drawChordOnCanvas } from './ChordDiagram';
 import { LUT_PRESETS } from './defaultState';
 
-// 1. מיקס אודיו אופליין התומך בריבוי קליפים וערוצי שמע + EQ ו-Fades
+// 1. מיקס אודיו אופליין התומך בערוצי השמע (A1), עמעומים (Fades) ואיקוולייזר (EQ)
 export async function renderAudioMixOffline({ clips = [], audioClips = [], totalDuration = 10, sampleRate = 48000 }) {
-  const safeDur = Math.max(1, totalDuration);
+  const safeDur = Math.max(0.5, totalDuration);
   const offlineCtx = new OfflineAudioContext(2, Math.ceil(safeDur * sampleRate), sampleRate);
   const decodedCache = new Map();
 
@@ -23,45 +23,40 @@ export async function renderAudioMixOffline({ clips = [], audioClips = [], total
     }
   };
 
-  // סאונד מתוך קליפי הווידאו הראשיים (V1)
-  for (const clip of clips) {
-    if (clip.isImage || !clip.url) continue;
-    const buf = await decodeUrl(clip.url);
-    if (!buf) continue;
-    const s = clip.settings || {};
-    const vol = (s.volume ?? 100) / 100;
-    if (vol <= 0) continue;
-
-    const source = offlineCtx.createBufferSource();
-    source.buffer = buf;
-    source.playbackRate.value = s.speed || 1;
-
-    const gainNode = offlineCtx.createGain();
-    const clipLen = (clip.trimEnd - clip.trimStart) / (s.speed || 1);
-    const fadeIn = s.audioFadeIn || s.fadeIn || 0;
-    const fadeOut = s.audioFadeOut || s.fadeOut || 0;
-
-    gainNode.gain.setValueAtTime(fadeIn > 0 ? 0.001 : vol, clip.timelineStart);
-    if (fadeIn > 0) gainNode.gain.linearRampToValueAtTime(vol, clip.timelineStart + Math.min(fadeIn, clipLen));
-    if (fadeOut > 0 && clipLen > fadeOut) {
-      gainNode.gain.setValueAtTime(vol, clip.timelineStart + clipLen - fadeOut);
-      gainNode.gain.linearRampToValueAtTime(0.001, clip.timelineStart + clipLen);
-    }
-
-    source.connect(gainNode);
-    gainNode.connect(offlineCtx.destination);
-    source.start(clip.timelineStart, clip.trimStart, clip.trimEnd - clip.trimStart);
-  }
-
-  // סאונד מתוך מסילת השמע הייעודית (A1)
+  // א. סאונד מתוך מסילת השמע A1 (כולל השמע שחולץ אוטומטית מהסרטונים)
   for (const aClip of audioClips) {
     if (aClip.muted || !aClip.url) continue;
     const buf = await decodeUrl(aClip.url);
     if (!buf) continue;
     const vol = (aClip.volume ?? 100) / 100;
+    if (vol <= 0) continue;
+
     const source = offlineCtx.createBufferSource();
     source.buffer = buf;
     source.playbackRate.value = aClip.speed || 1;
+
+    // שרשרת EQ ו-Pan
+    const lowCut = offlineCtx.createBiquadFilter();
+    lowCut.type = 'highpass';
+    lowCut.frequency.value = aClip.lowCutHz || 20;
+
+    const bass = offlineCtx.createBiquadFilter();
+    bass.type = 'lowshelf';
+    bass.frequency.value = 100;
+    bass.gain.value = aClip.lowGainDb || 0;
+
+    const mid = offlineCtx.createBiquadFilter();
+    mid.type = 'peaking';
+    mid.frequency.value = 1000;
+    mid.gain.value = aClip.midGainDb || 0;
+
+    const treble = offlineCtx.createBiquadFilter();
+    treble.type = 'highshelf';
+    treble.frequency.value = 8000;
+    treble.gain.value = aClip.highGainDb || 0;
+
+    const panner = offlineCtx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, (aClip.pan || 0) / 100));
 
     const gainNode = offlineCtx.createGain();
     const clipLen = (aClip.trimEnd - aClip.trimStart) / (aClip.speed || 1);
@@ -75,15 +70,44 @@ export async function renderAudioMixOffline({ clips = [], audioClips = [], total
       gainNode.gain.linearRampToValueAtTime(0.001, aClip.timelineStart + clipLen);
     }
 
+    source.connect(lowCut);
+    lowCut.connect(bass);
+    bass.connect(mid);
+    mid.connect(treble);
+    treble.connect(panner);
+    panner.connect(gainNode);
+    gainNode.connect(offlineCtx.destination);
+
+    const durToPlay = Math.max(0.05, Math.min(buf.duration - aClip.trimStart, aClip.trimEnd - aClip.trimStart));
+    source.start(Math.max(0, aClip.timelineStart), Math.max(0, aClip.trimStart), durToPlay);
+  }
+
+  // ב. תמיכה לאחור בקליפי וידאו שאין להם רצועת שמע מופרדת ב-A1
+  for (const clip of clips) {
+    if (clip.hasExtractedAudio || clip.isImage || !clip.url) continue;
+    const buf = await decodeUrl(clip.url);
+    if (!buf) continue;
+    const s = clip.settings || {};
+    const vol = (s.volume ?? 100) / 100;
+    if (vol <= 0) continue;
+
+    const source = offlineCtx.createBufferSource();
+    source.buffer = buf;
+    source.playbackRate.value = s.speed || 1;
+
+    const gainNode = offlineCtx.createGain();
+    gainNode.gain.value = vol;
     source.connect(gainNode);
     gainNode.connect(offlineCtx.destination);
-    source.start(aClip.timelineStart, aClip.trimStart, Math.min(buf.duration, aClip.trimEnd - aClip.trimStart));
+
+    const durToPlay = Math.max(0.05, Math.min(buf.duration - clip.trimStart, clip.trimEnd - clip.trimStart));
+    source.start(Math.max(0, clip.timelineStart), Math.max(0, clip.trimStart), durToPlay);
   }
 
   return await offlineCtx.startRendering();
 }
 
-// 2. המרת AudioBuffer ל-WAV
+// 2. המרת AudioBuffer לקובץ WAV
 export function audioBufferToWavBlob(buffer) {
   const numOfChan = buffer.numberOfChannels;
   const length = buffer.length * numOfChan * 2 + 44;
@@ -124,7 +148,7 @@ export function audioBufferToWavBlob(buffer) {
   return new Blob([bufferArray], { type: 'audio/wav' });
 }
 
-// 3. ציור פריים מאוחד לקנבס
+// 3. ציור פריים מאוחד על GPU Canvas
 export function drawCompositeFrameToCanvas({
   ctx, width, height, timelineTime, activeClip, mainMediaEl,
   pipClips = [], mediaElementsMap, texts = [], chords = []
@@ -141,7 +165,7 @@ export function drawCompositeFrameToCanvas({
 
     if (s.fitMode === 'blurBg') {
       ctx.save();
-      ctx.filter = 'blur(22px) brightness(0.55)';
+      ctx.filter = 'blur(20px) brightness(0.55)';
       const bgScale = Math.max(width / vw, height / vh);
       ctx.drawImage(mainMediaEl, (width - vw * bgScale) / 2, (height - vh * bgScale) / 2, vw * bgScale, vh * bgScale);
       ctx.restore();
@@ -156,7 +180,10 @@ export function drawCompositeFrameToCanvas({
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
 
     const lutFilter = LUT_PRESETS[s.lutPreset]?.filter || '';
-    ctx.filter = `brightness(${s.brightness ?? 100}%) contrast(${s.contrast ?? 100}%) saturate(${s.saturate ?? 100}%) hue-rotate(${s.hueRotate ?? 0}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''} ${lutFilter}`.trim();
+    const hasCustomFilter = (s.brightness ?? 100) !== 100 || (s.contrast ?? 100) !== 100 || (s.saturate ?? 100) !== 100 || (s.hueRotate ?? 0) !== 0 || s.blur > 0 || lutFilter;
+    if (hasCustomFilter) {
+      ctx.filter = `brightness(${s.brightness ?? 100}%) contrast(${s.contrast ?? 100}%) saturate(${s.saturate ?? 100}%) hue-rotate(${s.hueRotate ?? 0}deg) ${s.blur > 0 ? `blur(${s.blur}px)` : ''} ${lutFilter}`.trim();
+    }
 
     const fitScale = s.fitMode === 'cover' ? Math.max(width / vw, height / vh) : Math.min(width / vw, height / vh);
     const drawW = vw * fitScale;
@@ -178,7 +205,6 @@ export function drawCompositeFrameToCanvas({
     ctx.restore();
   }
 
-  // ציור כל שכבות ה-PiP הפעילות בזמן זה
   pipClips.forEach((pip) => {
     if (timelineTime >= pip.startTime && timelineTime <= pip.endTime) {
       const el = mediaElementsMap?.get(pip.url);
@@ -206,14 +232,12 @@ export function drawCompositeFrameToCanvas({
     }
   });
 
-  // ציור דיאגרמות אקורדים
   chords.forEach((chord) => {
     if (timelineTime >= chord.startTime && timelineTime <= chord.endTime) {
       drawChordOnCanvas(ctx, chord, scaleRatio);
     }
   });
 
-  // ציור כתוביות טקסט
   texts.forEach((txt) => {
     if (timelineTime >= txt.startTime && timelineTime <= txt.endTime) {
       ctx.save();
@@ -236,12 +260,12 @@ export function drawCompositeFrameToCanvas({
   });
 }
 
-// פונקציית קפיצת זמן בטוחה שלעולם לא נתקעת על 0%
+// קפיצת זמן מהירה בווידאו
 const safeSeekVideo = (videoEl, targetTime) => {
   if (!videoEl || videoEl.tagName !== 'VIDEO') return Promise.resolve();
   const dur = videoEl.duration || 100;
   const clamped = Math.max(0, Math.min(dur - 0.01, targetTime));
-  if (Math.abs(videoEl.currentTime - clamped) < 0.015 && videoEl.readyState >= 2) {
+  if (Math.abs(videoEl.currentTime - clamped) < 0.012 && videoEl.readyState >= 2) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
@@ -252,7 +276,7 @@ const safeSeekVideo = (videoEl, targetTime) => {
       videoEl.removeEventListener('seeked', done);
       resolve();
     };
-    const timer = setTimeout(done, 250);
+    const timer = setTimeout(done, 90);
     videoEl.addEventListener('seeked', () => { clearTimeout(timer); done(); }, { once: true });
     try {
       videoEl.currentTime = clamped;
@@ -286,7 +310,7 @@ const loadMediaElement = (url, isImage = false) => {
   });
 };
 
-// 4. ייצוא הפרויקט המלא ברקע
+// 4. ייצוא מהיר ברקע כולל קידוד שמע (AAC / Opus) ו-GPU Video Encoding
 export async function exportProjectOffline({
   format = 'mp4',
   resolutionScale = 1.0,
@@ -300,24 +324,125 @@ export async function exportProjectOffline({
   const totalDuration = Math.max(0.5, config?.totalDuration || 5);
 
   if (format === 'wav') {
-    if (onProgress) onProgress(30);
+    if (onProgress) onProgress(25);
     const audioMix = await renderAudioMixOffline({ clips, audioClips, totalDuration });
     if (onProgress) onProgress(100);
     return audioBufferToWavBlob(audioMix);
   }
 
-  // וידוא מידות זוגיות (חובה ב-H.264)
   const rawW = (config?.format?.width || 1280) * resolutionScale;
   const rawH = (config?.format?.height || 720) * resolutionScale;
   const width = Math.floor(rawW / 2) * 2;
   const height = Math.floor(rawH / 2) * 2;
 
+  // קנבס מואץ ב-GPU (ללא willReadFrequently שגורם להאטה)
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const ctx = canvas.getContext('2d', { alpha: false });
 
-  // טעינה מראש של כל קובצי המדיה בפרויקט
+  // שלב א: רינדור ערוץ השמע המלא מראש
+  if (onProgress) onProgress(3);
+  let renderedAudioBuffer = null;
+  try {
+    renderedAudioBuffer = await renderAudioMixOffline({ clips, audioClips, totalDuration, sampleRate: 48000 });
+  } catch (e) {
+    console.warn('Audio mix skipped:', e);
+  }
+
+  // בדיקת תמיכה בקודק שמע (AAC ל-MP4 או Opus ל-WebM)
+  const isWebm = format === 'webm';
+  let hasAudioSupport = false;
+  let webCodecsAudioCodec = isWebm ? 'opus' : 'mp4a.40.2';
+  let muxerAudioCodec = isWebm ? 'A_OPUS' : 'aac';
+
+  if (renderedAudioBuffer && window.AudioEncoder) {
+    try {
+      const checkA = await AudioEncoder.isConfigSupported({
+        codec: webCodecsAudioCodec,
+        sampleRate: 48000,
+        numberOfChannels: 2,
+        bitrate: 128000
+      });
+      if (checkA.supported) {
+        hasAudioSupport = true;
+      } else if (!isWebm) {
+        const checkOpus = await AudioEncoder.isConfigSupported({
+          codec: 'opus',
+          sampleRate: 48000,
+          numberOfChannels: 2,
+          bitrate: 128000
+        });
+        if (checkOpus.supported) {
+          webCodecsAudioCodec = 'opus';
+          muxerAudioCodec = 'opus';
+          hasAudioSupport = true;
+        }
+      }
+    } catch {
+      hasAudioSupport = false;
+    }
+  }
+
+  // אתחול ה-Muxer עם וידאו + שמע!
+  let muxer;
+  if (isWebm) {
+    muxer = new WebMMuxer.Muxer({
+      target: new WebMMuxer.ArrayBufferTarget(),
+      video: { codec: 'V_VP9', width, height, frameRate: fps },
+      audio: hasAudioSupport ? { codec: muxerAudioCodec, sampleRate: 48000, numberOfChannels: 2 } : undefined
+    });
+  } else {
+    muxer = new Mp4Muxer.Muxer({
+      target: new Mp4Muxer.ArrayBufferTarget(),
+      video: { codec: 'avc', width, height },
+      audio: hasAudioSupport ? { codec: muxerAudioCodec, sampleRate: 48000, numberOfChannels: 2 } : undefined,
+      fastStart: 'in-memory'
+    });
+  }
+
+  // קידוד והזרקת כל השמע לתוך הקובץ
+  if (hasAudioSupport && renderedAudioBuffer) {
+    const audioEncoder = new AudioEncoder({
+      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+      error: (e) => console.error('AudioEncoder error:', e)
+    });
+
+    audioEncoder.configure({
+      codec: webCodecsAudioCodec,
+      sampleRate: 48000,
+      numberOfChannels: 2,
+      bitrate: 128000
+    });
+
+    const ch0 = renderedAudioBuffer.getChannelData(0);
+    const ch1 = renderedAudioBuffer.numberOfChannels > 1 ? renderedAudioBuffer.getChannelData(1) : ch0;
+    const chunkSize = 48000; // שנייה אחת בכל מקטע
+
+    for (let offset = 0; offset < renderedAudioBuffer.length; offset += chunkSize) {
+      const frameCount = Math.min(chunkSize, renderedAudioBuffer.length - offset);
+      const planarData = new Float32Array(frameCount * 2);
+      planarData.set(ch0.subarray(offset, offset + frameCount), 0);
+      planarData.set(ch1.subarray(offset, offset + frameCount), frameCount);
+
+      const audioData = new AudioData({
+        format: 'f32-planar',
+        sampleRate: 48000,
+        numberOfFrames: frameCount,
+        numberOfChannels: 2,
+        timestamp: Math.round((offset / 48000) * 1_000_000),
+        data: planarData
+      });
+      audioEncoder.encode(audioData);
+      audioData.close();
+    }
+    await audioEncoder.flush();
+    audioEncoder.close();
+  }
+
+  if (onProgress) onProgress(10);
+
+  // טעינת אלמנטי הווידאו והתמונות
   const mediaElementsMap = new Map();
   for (const c of clips) {
     if (c.url && !mediaElementsMap.has(c.url)) {
@@ -330,42 +455,35 @@ export async function exportProjectOffline({
     }
   }
 
-  let muxer;
-  const isWebm = format === 'webm';
-  if (isWebm) {
-    muxer = new WebMMuxer.Muxer({
-      target: new WebMMuxer.ArrayBufferTarget(),
-      video: { codec: 'V_VP9', width, height, frameRate: fps }
-    });
-  } else {
-    muxer = new Mp4Muxer.Muxer({
-      target: new Mp4Muxer.ArrayBufferTarget(),
-      video: { codec: 'avc', width, height },
-      fastStart: 'in-memory'
-    });
-  }
-
   const videoEncoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => console.error('VideoEncoder error:', e)
   });
 
-  // בחירת פרופיל H.264 תומך HD ו-Full HD
+  // הפעלת האצת חומרה (GPU Hardware Encoding) למהירות מקסימלית
   let selectedCodec = isWebm ? 'vp09.00.10.08' : 'avc1.640028';
-  if (!isWebm && VideoEncoder.isConfigSupported) {
-    const check = await VideoEncoder.isConfigSupported({ codec: selectedCodec, width, height, bitrate: bitrateMbps * 1_000_000, framerate: fps });
-    if (!check.supported) selectedCodec = 'avc1.420028';
-  }
-
-  videoEncoder.configure({
+  const baseEncoderConfig = {
     codec: selectedCodec,
     width,
     height,
     bitrate: bitrateMbps * 1_000_000,
-    framerate: fps
-  });
+    framerate: fps,
+    hardwareAcceleration: 'prefer-hardware',
+    latencyMode: 'realtime'
+  };
+
+  if (!isWebm && VideoEncoder.isConfigSupported) {
+    const check = await VideoEncoder.isConfigSupported(baseEncoderConfig);
+    if (!check.supported) {
+      baseEncoderConfig.codec = 'avc1.420028';
+      baseEncoderConfig.hardwareAcceleration = 'no-preference';
+    }
+  }
+
+  videoEncoder.configure(baseEncoderConfig);
 
   const totalFrames = Math.max(1, Math.ceil(totalDuration * fps));
+  let lastYieldTime = performance.now();
 
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     if (abortSignal?.aborted) {
@@ -373,8 +491,8 @@ export async function exportProjectOffline({
       throw new Error('Export aborted');
     }
 
-    while (videoEncoder.encodeQueueSize > 8) {
-      await new Promise(r => setTimeout(r, 15));
+    while (videoEncoder.encodeQueueSize > 12) {
+      await new Promise(r => setTimeout(r, 8));
     }
 
     const timelineTime = frameIndex / fps;
@@ -418,12 +536,13 @@ export async function exportProjectOffline({
     videoEncoder.encode(frame, { keyFrame: frameIndex % (fps * 2) === 0 });
     frame.close();
 
-    const pct = Math.min(99, Math.round(((frameIndex + 1) / totalFrames) * 100));
-    if (onProgress) onProgress(pct);
-
-    // שחרור ה-Main Thread לעדכון מד ההתקדמות על המסך
-    if (frameIndex % 3 === 0) {
+    // עדכון מד ההתקדמות רק פעם ב-50ms כדי לא לעכב את הלולאה!
+    const now = performance.now();
+    if (now - lastYieldTime > 50 || frameIndex === totalFrames - 1) {
+      const pct = Math.min(99, 10 + Math.round(((frameIndex + 1) / totalFrames) * 89));
+      if (onProgress) onProgress(pct);
       await new Promise(r => setTimeout(r, 0));
+      lastYieldTime = performance.now();
     }
   }
 
