@@ -26,8 +26,8 @@ const TimelinePanel = React.memo(function TimelinePanel({
   canUndo,
   canRedo
 }) {
-  const [zoomPercent, setZoomPercent] = useState(120); // 50% עד 3000%
-  const [activeTool, setActiveTool] = useState('select'); // select | blade
+  const [zoomPercent, setZoomPercent] = useState(120);
+  const [activeTool, setActiveTool] = useState('select');
   const [dragState, setDragState] = useState(null);
 
   const safeDuration = Math.max(duration || 15, 5);
@@ -42,7 +42,7 @@ const TimelinePanel = React.memo(function TimelinePanel({
     onSeek(clickTime);
   };
 
-  const startClipDrag = (e, type, id, mode, initStart, initEnd, initTrimStart = 0) => {
+  const startClipDrag = (e, type, id, mode, initStart, initEnd, initTrimStart = 0, initTrimEnd = 10) => {
     e.stopPropagation();
     onSelectItem({ type, id });
     if (activeTool === 'blade') {
@@ -55,18 +55,19 @@ const TimelinePanel = React.memo(function TimelinePanel({
     setDragState({
       type,
       id,
-      mode, // 'move' | 'start' | 'end'
+      mode,
       startX: e.clientX,
       initStart,
       initEnd,
-      initTrimStart
+      initTrimStart,
+      initTrimEnd
     });
   };
 
   const handleMouseMove = (e) => {
     if (!dragState) return;
     const deltaSec = ((e.clientX - dragState.startX) / timelineWidth) * safeDuration;
-    const { type, id, mode, initStart, initEnd, initTrimStart } = dragState;
+    const { type, id, mode, initStart, initEnd, initTrimStart, initTrimEnd } = dragState;
     const span = initEnd - initStart;
 
     let nextStart = initStart;
@@ -88,8 +89,12 @@ const TimelinePanel = React.memo(function TimelinePanel({
     } else if (type === 'audio') {
       if (mode === 'move') {
         onUpdateAudioClip(id, { timelineStart: nextStart });
+      } else if (mode === 'start') {
+        const appliedDelta = nextStart - initStart;
+        const newTrimStart = Math.max(0, Math.min(initTrimEnd - 0.2, Number((initTrimStart + appliedDelta).toFixed(2))));
+        onUpdateAudioClip(id, { timelineStart: nextStart, trimStart: newTrimStart });
       } else if (mode === 'end') {
-        onUpdateAudioClip(id, { trimEnd: Math.max(0.3, Number((initTrimStart + (nextEnd - initStart)).toFixed(2))) });
+        onUpdateAudioClip(id, { trimEnd: Math.max(initTrimStart + 0.2, Number((initTrimStart + (nextEnd - initStart)).toFixed(2))) });
       }
     } else if (type === 'text') {
       onUpdateTexts(texts.map(t => t.id === id ? { ...t, startTime: nextStart, endTime: nextEnd } : t));
@@ -116,7 +121,6 @@ const TimelinePanel = React.memo(function TimelinePanel({
 
   return (
     <section style={styles.dock} onMouseMove={handleMouseMove} onMouseUp={() => setDragState(null)} onMouseLeave={() => setDragState(null)}>
-      {/* סרגל כלי עריכה של ציר הזמן */}
       <div style={styles.toolbar}>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <div style={{ display: 'flex', backgroundColor: '#27272a', borderRadius: 4, overflow: 'hidden', border: '1px solid #3f3f46' }}>
@@ -146,7 +150,6 @@ const TimelinePanel = React.memo(function TimelinePanel({
           <button style={{ ...styles.actionBtn, opacity: canRedo ? 1 : 0.4 }} onClick={onRedo} disabled={!canRedo} title="החזר (Redo)"><Redo2 size={13} color="#fbbf24" /></button>
         </div>
 
-        {/* בקר זום מורחב עד 3000% עם סקאלה גדולה ונוחה */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button style={styles.zoomPresetBtn} onClick={() => setZoomPercent(100)}>התאם</button>
           <button style={styles.zoomPresetBtn} onClick={() => setZoomPercent(600)}>x6</button>
@@ -166,7 +169,6 @@ const TimelinePanel = React.memo(function TimelinePanel({
         </div>
       </div>
 
-      {/* גוף ציר הזמן */}
       <div style={styles.bodyWrapper}>
         <div style={styles.labelsCol}>
           <div style={styles.rulerCorner}>שכבות עריכה</div>
@@ -181,12 +183,11 @@ const TimelinePanel = React.memo(function TimelinePanel({
           <div style={{ width: timelineWidth, minHeight: '100%', position: 'relative' }} onClick={handleTrackAreaClick}>
             <div style={{ height: 22, backgroundColor: '#141416', borderBottom: '1px solid #27272a', position: 'relative' }}>{memoizedRulerTicks}</div>
 
-            {/* סמן ה-Playhead */}
             <div style={{ position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: '#ef4444', zIndex: 40, left: 0, transform: `translateX(${timeToPx(currentTime)}px)`, pointerEvents: 'none' }}>
               <div style={{ width: 12, height: 12, backgroundColor: '#ef4444', borderRadius: '50%', marginLeft: -5 }} />
             </div>
 
-            {/* מסילה 1: אקורדים (C1) */}
+            {/* C1: אקורדים */}
             <div style={styles.trackLane}>
               {chords.map((c) => {
                 const sel = isSelected('chord', c.id);
@@ -204,7 +205,7 @@ const TimelinePanel = React.memo(function TimelinePanel({
               })}
             </div>
 
-            {/* מסילה 2: כתוביות (T1) */}
+            {/* T1: כתוביות */}
             <div style={styles.trackLane}>
               {texts.map((t) => {
                 const sel = isSelected('text', t.id);
@@ -222,7 +223,7 @@ const TimelinePanel = React.memo(function TimelinePanel({
               })}
             </div>
 
-            {/* מסילה 3: שכבות תמונה ו-PiP מרובות (V2) */}
+            {/* V2: שכבות תמונה ו-PiP */}
             <div style={styles.trackLane}>
               {pipClips.map((p) => {
                 const sel = isSelected('pip', p.id);
@@ -240,7 +241,7 @@ const TimelinePanel = React.memo(function TimelinePanel({
               })}
             </div>
 
-            {/* מסילה 4: סרטונים ראשיים מרובים (V1) עם ידיות חיתוך ומעברים */}
+            {/* V1: וידאו ראשי */}
             <div style={styles.trackLane}>
               {clips.map((clip, idx) => {
                 const sel = isSelected('video', clip.id);
@@ -248,7 +249,7 @@ const TimelinePanel = React.memo(function TimelinePanel({
                 return (
                   <div
                     key={clip.id}
-                    onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'move', clip.timelineStart, clip.timelineStart + len, clip.trimStart)}
+                    onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'move', clip.timelineStart, clip.timelineStart + len, clip.trimStart, clip.trimEnd)}
                     style={{
                       ...styles.clipBase,
                       backgroundColor: sel ? '#2563eb' : '#1e3a8a',
@@ -257,36 +258,46 @@ const TimelinePanel = React.memo(function TimelinePanel({
                       width: Math.max(24, timeToPx(len))
                     }}
                   >
-                    <div onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'start', clip.timelineStart, clip.timelineStart + len, clip.trimStart)} style={styles.clipHandle} title="גרור לקיצור תחילת הסרטון" />
+                    <div onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'start', clip.timelineStart, clip.timelineStart + len, clip.trimStart, clip.trimEnd)} style={styles.clipHandle} title="גרור לקיצור תחילת הסרטון" />
                     <span style={styles.clipText}>
-                      🎬 {idx + 1}. {clip.label} ({len.toFixed(1)}s) {clip.settings?.transitionOut !== 'none' ? '✨' : ''}
+                      🎬 {idx + 1}. {clip.label} ({len.toFixed(1)}s)
                     </span>
-                    <div onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'end', clip.timelineStart, clip.timelineStart + len, clip.trimStart)} style={styles.clipHandle} title="גרור לקיצור/הארכת סוף הסרטון" />
+                    <div onMouseDown={(e) => startClipDrag(e, 'video', clip.id, 'end', clip.timelineStart, clip.timelineStart + len, clip.trimStart, clip.trimEnd)} style={styles.clipHandle} title="גרור לקיצור/הארכת סוף הסרטון" />
                   </div>
                 );
               })}
             </div>
 
-            {/* מסילה 5: ערוצי שמע מרובים (A1) */}
+            {/* A1: ערוצי שמע (נוצרים אוטומטית עם הסרטון וניתנים לעריכה ישירה) */}
             <div style={styles.trackLane}>
               {audioClips.map((a) => {
                 const sel = isSelected('audio', a.id);
                 const len = (a.trimEnd - a.trimStart) / (a.speed || 1);
+                const widthPx = Math.max(24, timeToPx(len));
+                const barCount = Math.min(80, Math.max(8, Math.floor(widthPx / 8)));
                 return (
                   <div
                     key={a.id}
-                    onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'move', a.timelineStart, a.timelineStart + len, a.trimStart)}
+                    onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'move', a.timelineStart, a.timelineStart + len, a.trimStart, a.trimEnd)}
                     style={{
                       ...styles.clipBase,
-                      backgroundColor: '#065f46',
+                      backgroundColor: sel ? '#059669' : '#065f46',
                       border: sel ? '2px solid #fff' : '1px solid #34d399',
                       transform: `translateX(${timeToPx(a.timelineStart)}px)`,
-                      width: Math.max(24, timeToPx(len))
+                      width: widthPx
                     }}
                   >
-                    <div onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'start', a.timelineStart, a.timelineStart + len, a.trimStart)} style={styles.clipHandle} />
-                    <span style={styles.clipText}>🎵 {a.name} ({a.volume}%)</span>
-                    <div onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'end', a.timelineStart, a.timelineStart + len, a.trimStart)} style={styles.clipHandle} />
+                    {/* תצוגת גלי קול בתוך רצועת השמע */}
+                    <div style={{ position: 'absolute', inset: '0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: 0.35, pointerEvents: 'none' }}>
+                      {Array.from({ length: barCount }).map((_, i) => (
+                        <div key={i} style={{ width: 2, height: `${25 + ((i * 37) % 65)}%`, backgroundColor: '#a7f3d0', borderRadius: 1 }} />
+                      ))}
+                    </div>
+                    <div onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'start', a.timelineStart, a.timelineStart + len, a.trimStart, a.trimEnd)} style={styles.clipHandle} title="קצר תחילת שמע" />
+                    <span style={{ ...styles.clipText, position: 'relative', zIndex: 2 }}>
+                      🎵 {a.name} ({a.volume}%{a.fadeIn > 0 || a.fadeOut > 0 ? ' • Fade' : ''})
+                    </span>
+                    <div onMouseDown={(e) => startClipDrag(e, 'audio', a.id, 'end', a.timelineStart, a.timelineStart + len, a.trimStart, a.trimEnd)} style={styles.clipHandle} title="קצר סוף שמע" />
                   </div>
                 );
               })}
@@ -312,6 +323,6 @@ const styles = {
   laneLabel: { height: 42, borderBottom: '1px solid #27272a', fontSize: 11, fontWeight: 600, color: '#d4d4d8', display: 'flex', alignItems: 'center', paddingRight: 8 },
   trackLane: { height: 42, borderBottom: '1px solid #27272a', position: 'relative' },
   clipBase: { position: 'absolute', top: 4, bottom: 4, left: 0, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', overflow: 'hidden', boxSizing: 'border-box', boxShadow: '0 2px 6px rgba(0,0,0,0.4)' },
-  clipHandle: { width: 7, height: '100%', backgroundColor: 'rgba(255,255,255,0.35)', cursor: 'ew-resize', flexShrink: 0 },
+  clipHandle: { width: 7, height: '100%', backgroundColor: 'rgba(255,255,255,0.35)', cursor: 'ew-resize', flexShrink: 0, position: 'relative', zIndex: 3 },
   clipText: { fontSize: 10, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 6px', pointerEvents: 'none' }
 };
