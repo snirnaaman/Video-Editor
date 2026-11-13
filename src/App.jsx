@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Play, Pause, SkipBack, DownloadCloud, ChevronLeft, ChevronRight,
-  Monitor, ZoomIn, ZoomOut, Bot, Upload, Keyboard, PanelLeft, PanelRight, PanelBottom, Grid3x3, Columns, Sliders, Film
+  Monitor, ZoomIn, ZoomOut, Bot, Keyboard, PanelLeft, PanelRight, PanelBottom, Grid3x3, Columns, Sliders, Film
 } from 'lucide-react';
 import {
   ASPECT_RATIOS, DEFAULT_CLIP_SETTINGS, DEFAULT_PIP_SETTINGS,
-  DEFAULT_AUDIO_CLIP, LUT_PRESETS, DEFAULT_CHORD_OVERLAY, DEFAULT_TEXT_OBJECT
+  DEFAULT_AUDIO_CLIP, LUT_PRESETS, DEFAULT_TEXT_OBJECT
 } from './defaultState';
 import MediaPoolPanel from './MediaPoolPanel';
 import InspectorPanel from './InspectorPanel';
@@ -32,27 +32,23 @@ const generateThumbnail = (url) => new Promise((resolve) => {
 
 export default function App() {
   const videoRef = useRef(null);
-  const bgCanvasRef = useRef(null);
+  const audioTrackRef = useRef(null); // נגן השמע המסונכרן למסילת A1
   const viewportRef = useRef(null);
-  const importFileRef = useRef(null);
   const dragRaf = useRef(null);
   const handlersRef = useRef({});
 
-  // מאגר מדיה ומסילות מרובות
   const [mediaPool, setMediaPool] = useState([]);
-  const [clips, setClips] = useState([]); // V1: מספר סרטונים/תמונות
-  const [pipClips, setPipClips] = useState([]); // V2: מספר שכבות תמונה/וידאו
-  const [audioClips, setAudioClips] = useState([]); // A1: מספר קובצי שמע
+  const [clips, setClips] = useState([]); // V1: וידאו
+  const [pipClips, setPipClips] = useState([]); // V2: תמונות/PiP
+  const [audioClips, setAudioClips] = useState([]); // A1: שמע (מתמלא אוטומטית עם הסרטון + שמע נוסף)
   const [texts, setTexts] = useState([]); // T1: כתוביות
   const [chords, setChords] = useState([]); // C1: אקורדים
   const [transcript, setTranscript] = useState([]);
 
-  // בחירה פעילה בציר הזמן ({ type: 'video'|'pip'|'audio'|'text'|'chord', id })
   const [selectedItem, setSelectedItem] = useState(null);
   const [history, setHistory] = useState([]);
   const [redoHistory, setRedoHistory] = useState([]);
 
-  // הגדרות מוניטור וחלונות (פתיחה/סגירה ופיצול לחלון צף)
   const [aspectKey, setAspectKey] = useState('16:9');
   const [previewZoom, setPreviewZoom] = useState(100);
   const [showSafeZones, setShowSafeZones] = useState(false);
@@ -84,7 +80,7 @@ export default function App() {
 
   const v1Duration = clips.reduce((acc, c) => acc + (c.trimEnd - c.trimStart) / (c.settings?.speed || 1), 0);
   const maxPipEnd = pipClips.reduce((m, p) => Math.max(m, p.endTime), 0);
-  const maxAudioEnd = audioClips.reduce((m, a) => Math.max(m, a.timelineStart + (a.trimEnd - a.trimStart)), 0);
+  const maxAudioEnd = audioClips.reduce((m, a) => Math.max(m, a.timelineStart + (a.trimEnd - a.trimStart) / (a.speed || 1)), 0);
   const totalDuration = Math.max(v1Duration, maxPipEnd, maxAudioEnd, 5);
 
   const activeClip = (() => {
@@ -96,9 +92,17 @@ export default function App() {
     return clips[clips.length - 1];
   })();
 
+  const activeAudioClip = (() => {
+    for (let i = 0; i < audioClips.length; i++) {
+      const a = audioClips[i];
+      const len = (a.trimEnd - a.trimStart) / (a.speed || 1);
+      if (!a.muted && currentTime >= a.timelineStart && currentTime <= a.timelineStart + len + 0.03) return a;
+    }
+    return null;
+  })();
+
   const selectedClip = (selectedItem?.type === 'video' && clips.find(c => c.id === selectedItem.id)) || activeClip;
 
-  // שמירה להיסטוריה (Undo / Redo)
   const saveHistory = () => {
     const snap = structuredClone({ clips, pipClips, audioClips, texts, chords });
     setHistory(prev => [...prev.slice(-15), snap]);
@@ -129,7 +133,7 @@ export default function App() {
     applySnapshot(next);
   };
 
-  // סנכרון מקור הווידאו הראשי כשעוברים בין מספר סרטונים ב-V1
+  // סנכרון הווידאו הראשי (V1)
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid || !activeClip || activeClip.isImage) return;
@@ -141,6 +145,39 @@ export default function App() {
       if (isPlaying) vid.play().catch(() => {});
     }
   }, [activeClip?.id, activeClip?.url]);
+
+  // סנכרון נגן השמע (A1) כך שכל עריכת שמע בבאר תישמע מיד ב-Preview
+  useEffect(() => {
+    const aud = audioTrackRef.current;
+    if (!aud) return;
+    if (!activeAudioClip) {
+      aud.pause();
+      return;
+    }
+    if (aud.dataset.clipUrl !== activeAudioClip.url) {
+      aud.dataset.clipUrl = activeAudioClip.url;
+      aud.src = activeAudioClip.url;
+    }
+    const targetAudioTime = activeAudioClip.trimStart + (currentTime - activeAudioClip.timelineStart) * (activeAudioClip.speed || 1);
+    if (Math.abs(aud.currentTime - targetAudioTime) > 0.2) {
+      aud.currentTime = Math.max(0, targetAudioTime);
+    }
+    aud.playbackRate = activeAudioClip.speed || 1;
+
+    // חישוב ווליום ו-Fade In/Out בזמן אמת
+    const localT = currentTime - activeAudioClip.timelineStart;
+    const clipLen = (activeAudioClip.trimEnd - activeAudioClip.trimStart) / (activeAudioClip.speed || 1);
+    let vol = (activeAudioClip.volume ?? 100) / 100;
+    if (activeAudioClip.fadeIn > 0 && localT < activeAudioClip.fadeIn) vol *= Math.max(0, localT / activeAudioClip.fadeIn);
+    if (activeAudioClip.fadeOut > 0 && localT > clipLen - activeAudioClip.fadeOut) vol *= Math.max(0, (clipLen - localT) / activeAudioClip.fadeOut);
+    aud.volume = Math.max(0, Math.min(1, vol));
+
+    if (isPlaying && aud.paused) {
+      aud.play().catch(() => {});
+    } else if (!isPlaying && !aud.paused) {
+      aud.pause();
+    }
+  }, [activeAudioClip?.id, activeAudioClip?.url, currentTime, isPlaying]);
 
   const handleSeek = (targetSec) => {
     const clamped = Math.max(0, Math.min(totalDuration, targetSec));
@@ -159,22 +196,24 @@ export default function App() {
     }
   };
 
-  // לחצן חזרה להתחלה 00:00:00
   const handleResetToZero = () => {
     if (videoRef.current) videoRef.current.pause();
+    if (audioTrackRef.current) audioTrackRef.current.pause();
     setIsPlaying(false);
     handleSeek(0);
   };
 
   const togglePlay = () => {
     const vid = videoRef.current;
-    if (!vid || clips.length === 0) return;
+    if (!vid || (clips.length === 0 && audioClips.length === 0)) return;
     if (isPlaying) {
       vid.pause();
+      if (audioTrackRef.current) audioTrackRef.current.pause();
       setIsPlaying(false);
     } else {
       if (currentTime >= totalDuration - 0.05) handleSeek(0);
       vid.play().catch(() => {});
+      if (audioTrackRef.current && activeAudioClip) audioTrackRef.current.play().catch(() => {});
       setIsPlaying(true);
     }
   };
@@ -184,7 +223,6 @@ export default function App() {
     if (!vid || !activeClip || !isPlaying) return;
     const spd = activeClip.settings?.speed || 1;
     vid.playbackRate = spd;
-    vid.volume = Math.min(1, Math.max(0, (activeClip.settings?.volume ?? 100) / 100));
 
     const elapsed = (vid.currentTime - activeClip.trimStart) / spd;
     const nowTime = activeClip.timelineStart + Math.max(0, elapsed);
@@ -197,13 +235,14 @@ export default function App() {
         setCurrentTime(nextClip.timelineStart + 0.01);
       } else {
         vid.pause();
+        if (audioTrackRef.current) audioTrackRef.current.pause();
         setIsPlaying(false);
         handleSeek(0);
       }
     }
   };
 
-  // הוספת קבצים מרובים למאגר ולמסילות
+  // העלאת קבצים והוספה אוטומטית של השמע למסילת A1 במקביל לסרטון!
   const handleUploadFiles = async (e, defaultTrack) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -218,6 +257,12 @@ export default function App() {
         const meta = await generateThumbnail(url);
         thumbUrl = meta.thumb;
         duration = Number(meta.duration.toFixed(2));
+      } else if (file.type.startsWith('audio/')) {
+        duration = await new Promise((res) => {
+          const a = new Audio(url);
+          a.onloadedmetadata = () => res(Number((a.duration || 10).toFixed(2)));
+          a.onerror = () => res(10);
+        });
       }
       return {
         id: 'media-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
@@ -240,24 +285,50 @@ export default function App() {
     e.target.value = null;
   };
 
+  // כשמוסיפים סרטון ל-V1, השמע שלו מתווסף אוטומטית במקביל ל-A1!
   const handleAddVideoToTimeline = (mediaItem) => {
     saveHistory();
-    const newClip = {
-      id: 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
-      mediaId: mediaItem.id,
-      label: mediaItem.name,
-      url: mediaItem.url,
-      isImage: mediaItem.isImage,
-      trimStart: 0,
-      trimEnd: mediaItem.duration || 8,
-      timelineStart: 0,
-      settings: structuredClone(DEFAULT_CLIP_SETTINGS)
-    };
+    const clipId = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+    const linkedAudioId = 'aud-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+    const clipDur = mediaItem.duration || 8;
+
     setClips(prev => {
+      const newClip = {
+        id: clipId,
+        linkedAudioId: !mediaItem.isImage ? linkedAudioId : null,
+        hasExtractedAudio: !mediaItem.isImage,
+        mediaId: mediaItem.id,
+        label: mediaItem.name,
+        url: mediaItem.url,
+        isImage: mediaItem.isImage,
+        trimStart: 0,
+        trimEnd: clipDur,
+        timelineStart: 0,
+        settings: structuredClone(DEFAULT_CLIP_SETTINGS)
+      };
       const updated = recalculateTimelinePositions([...prev, newClip]);
+      const addedClip = updated.find(c => c.id === clipId);
+
+      // יצירת רצועת השמע המקבילה ב-A1 אוטומטית בדיוק באותו זמן!
+      if (!mediaItem.isImage && addedClip) {
+        const autoAudioClip = {
+          ...DEFAULT_AUDIO_CLIP,
+          id: linkedAudioId,
+          linkedVideoId: clipId,
+          name: `שמע: ${mediaItem.name}`,
+          url: mediaItem.url,
+          timelineStart: addedClip.timelineStart,
+          trimStart: 0,
+          trimEnd: clipDur,
+          fadeIn: 0,
+          fadeOut: 0
+        };
+        setAudioClips(audPrev => [...audPrev, autoAudioClip]);
+      }
       return updated;
     });
-    setSelectedItem({ type: 'video', id: newClip.id });
+
+    setSelectedItem({ type: 'video', id: clipId });
   };
 
   const handleAddPipToTimeline = (mediaItem) => {
@@ -284,13 +355,15 @@ export default function App() {
       url: mediaItem.url,
       timelineStart: Number(currentTime.toFixed(1)),
       trimStart: 0,
-      trimEnd: mediaItem.duration || 10
+      trimEnd: mediaItem.duration || 10,
+      fadeIn: 0,
+      fadeOut: 0
     };
     setAudioClips(prev => [...prev, newAud]);
     setSelectedItem({ type: 'audio', id: newAud.id });
   };
 
-  // פיצול, שכפול ומחיקה של האלמנט הנבחר בציר הזמן
+  // פיצול סרטון מפצל אוטומטית גם את השמע המקביל שלו, וניתן לפצל גם שמע בנפרד!
   const handleSplitSelected = (splitTime = currentTime, targetOverride = null) => {
     const target = targetOverride || selectedItem || (activeClip ? { type: 'video', id: activeClip.id } : null);
     if (!target) return;
@@ -303,12 +376,40 @@ export default function App() {
       const offset = (splitTime - clip.timelineStart) * spd;
       if (offset <= 0.15 || offset >= (clip.trimEnd - clip.trimStart) - 0.15) return;
       const splitPt = Number((clip.trimStart + offset).toFixed(3));
-      const c1 = { ...clip, id: 'clip-' + Date.now() + 'a', trimEnd: splitPt, settings: structuredClone(clip.settings) };
-      const c2 = { ...clip, id: 'clip-' + Date.now() + 'b', trimStart: splitPt, settings: structuredClone(clip.settings) };
+      const newId1 = 'clip-' + Date.now() + 'a';
+      const newId2 = 'clip-' + Date.now() + 'b';
+      const audId1 = 'aud-' + Date.now() + 'a';
+      const audId2 = 'aud-' + Date.now() + 'b';
+
+      const c1 = { ...clip, id: newId1, linkedAudioId: audId1, trimEnd: splitPt, settings: structuredClone(clip.settings) };
+      const c2 = { ...clip, id: newId2, linkedAudioId: audId2, trimStart: splitPt, settings: structuredClone(clip.settings) };
       const next = [...clips];
       next.splice(clips.findIndex(c => c.id === clip.id), 1, c1, c2);
-      setClips(recalculateTimelinePositions(next));
-      setSelectedItem({ type: 'video', id: c2.id });
+      const recalculated = recalculateTimelinePositions(next);
+      setClips(recalculated);
+
+      // פיצול אוטומטי של רצועת השמע המקבילה ב-A1
+      if (clip.linkedAudioId) {
+        const linkedAud = audioClips.find(a => a.id === clip.linkedAudioId);
+        if (linkedAud) {
+          const updatedC2 = recalculated.find(c => c.id === newId2);
+          const a1 = { ...linkedAud, id: audId1, linkedVideoId: newId1, trimEnd: splitPt };
+          const a2 = { ...linkedAud, id: audId2, linkedVideoId: newId2, timelineStart: updatedC2 ? updatedC2.timelineStart : splitTime, trimStart: splitPt };
+          setAudioClips(audioClips.flatMap(a => a.id === linkedAud.id ? [a1, a2] : [a]));
+        }
+      }
+      setSelectedItem({ type: 'video', id: newId2 });
+    } else if (target.type === 'audio') {
+      const a = audioClips.find(x => x.id === target.id);
+      if (!a) return;
+      const spd = a.speed || 1;
+      const offset = (splitTime - a.timelineStart) * spd;
+      if (offset <= 0.15 || offset >= (a.trimEnd - a.trimStart) - 0.15) return;
+      const splitPt = Number((a.trimStart + offset).toFixed(3));
+      const a1 = { ...a, id: 'aud-' + Date.now() + 'a', trimEnd: splitPt };
+      const a2 = { ...a, id: 'aud-' + Date.now() + 'b', timelineStart: Number(splitTime.toFixed(2)), trimStart: splitPt };
+      setAudioClips(audioClips.flatMap(x => x.id === a.id ? [a1, a2] : [x]));
+      setSelectedItem({ type: 'audio', id: a2.id });
     } else if (target.type === 'pip') {
       const p = pipClips.find(x => x.id === target.id);
       if (!p || splitTime <= p.startTime + 0.2 || splitTime >= p.endTime - 0.2) return;
@@ -330,6 +431,12 @@ export default function App() {
       const next = [...clips];
       next.splice(idx + 1, 0, copy);
       setClips(recalculateTimelinePositions(next));
+    } else if (target.type === 'audio') {
+      const a = audioClips.find(x => x.id === target.id);
+      if (a) {
+        const len = (a.trimEnd - a.trimStart) / (a.speed || 1);
+        setAudioClips([...audioClips, { ...structuredClone(a), id: 'aud-' + Date.now(), linkedVideoId: null, timelineStart: Number((a.timelineStart + len).toFixed(2)) }]);
+      }
     } else if (target.type === 'pip') {
       const p = pipClips.find(x => x.id === target.id);
       if (p) setPipClips([...pipClips, { ...structuredClone(p), id: 'pip-' + Date.now(), startTime: p.endTime, endTime: p.endTime + (p.endTime - p.startTime) }]);
@@ -347,9 +454,13 @@ export default function App() {
     if (!target) return;
     saveHistory();
     if (target.type === 'video') {
+      const clipToDelete = clips.find(c => c.id === target.id);
       const filtered = clips.filter(c => c.id !== target.id);
       const recalc = recalculateTimelinePositions(filtered);
       setClips(recalc);
+      if (clipToDelete?.linkedAudioId) {
+        setAudioClips(prev => prev.filter(a => a.id !== clipToDelete.linkedAudioId));
+      }
       setSelectedItem(recalc[0] ? { type: 'video', id: recalc[0].id } : null);
     } else if (target.type === 'pip') {
       setPipClips(pipClips.filter(p => p.id !== target.id));
@@ -366,6 +477,7 @@ export default function App() {
     }
   };
 
+  // קיצור/הארכה של סרטון ב-V1 מעדכן אוטומטית גם את השמע המקביל שלו ב-A1
   const handleUpdateClipTiming = (clipId, mode, deltaSec, initTrimStart, initLen) => {
     setClips(prev => {
       const updated = prev.map(c => {
@@ -380,11 +492,21 @@ export default function App() {
         }
         return c;
       });
-      return recalculateTimelinePositions(updated);
+      const recalc = recalculateTimelinePositions(updated);
+      setAudioClips(audPrev => audPrev.map(a => {
+        const linkedVid = recalc.find(v => v.id === a.linkedVideoId);
+        if (!linkedVid) return a;
+        return {
+          ...a,
+          timelineStart: linkedVid.timelineStart,
+          trimStart: linkedVid.trimStart,
+          trimEnd: linkedVid.trimEnd
+        };
+      }));
+      return recalc;
     });
   };
 
-  // קיצורי מקלדת גלובליים
   handlersRef.current = {
     togglePlay,
     handleResetToZero,
@@ -418,7 +540,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // גרירת אלמנטים על מסך הקנבס
   const onLayerMouseDown = (e, type, mode, id) => {
     e.stopPropagation();
     setSelectedItem({ type, id });
@@ -468,7 +589,6 @@ export default function App() {
 
   return (
     <div style={styles.appShell} onMouseMove={onViewportMouseMove} onMouseUp={() => setCanvasDrag(null)}>
-      {/* סרגל עליון מתקדם */}
       <header style={styles.topHeader}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={styles.brandBadge}>GUITAR STUDIO PRO</span>
@@ -479,22 +599,21 @@ export default function App() {
             ))}
           </div>
 
-          {/* לחצני פתיחה/סגירה של הפאנלים כדי להגדיל את מסך ה-Preview */}
           <div style={styles.aspectSwitcher}>
-            <button style={{ ...styles.panelToggleBtn, color: isPoolOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsPoolOpen(!isPoolOpen)} title="הצג/הסתר מאגר מדיה">
+            <button style={{ ...styles.panelToggleBtn, color: isPoolOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsPoolOpen(!isPoolOpen)}>
               <PanelRight size={14} /> מדיה
             </button>
-            <button style={{ ...styles.panelToggleBtn, color: isInspectorOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsInspectorOpen(!isInspectorOpen)} title="הצג/הסתר פאנל עריכה (Inspector)">
+            <button style={{ ...styles.panelToggleBtn, color: isInspectorOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsInspectorOpen(!isInspectorOpen)}>
               <PanelLeft size={14} /> עריכה
             </button>
-            <button style={{ ...styles.panelToggleBtn, color: isTimelineOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsTimelineOpen(!isTimelineOpen)} title="הצג/הסתר ציר זמן תחתון">
+            <button style={{ ...styles.panelToggleBtn, color: isTimelineOpen ? '#38bdf8' : '#71717a' }} onClick={() => setIsTimelineOpen(!isTimelineOpen)}>
               <PanelBottom size={14} /> ציר זמן
             </button>
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button style={styles.secondaryBtn} onClick={() => setIsShortcutsOpen(true)} title="קיצורי מקלדת (?)">
+          <button style={styles.secondaryBtn} onClick={() => setIsShortcutsOpen(true)}>
             <Keyboard size={14} color="#38bdf8" /> קיצורי דרך
           </button>
           <button style={styles.exportBtn} onClick={() => setIsExportModalOpen(true)} disabled={clips.length === 0 && pipClips.length === 0}>
@@ -506,7 +625,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* אזור העבודה המרכזי - מתרחב אוטומטית כשפאנלים נסגרים */}
       <div style={styles.workspaceGrid}>
         <WindowContainer
           title="מאגר מדיה, תמלול ואקורדים"
@@ -543,7 +661,6 @@ export default function App() {
           />
         </WindowContainer>
 
-        {/* מוניטור ה-Preview המרכזי */}
         <main style={styles.monitorPanel}>
           <div style={styles.panelTitleBar}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -554,7 +671,7 @@ export default function App() {
                 <ZoomIn size={12} style={{ cursor: 'pointer' }} onClick={() => setPreviewZoom(Math.min(300, previewZoom + 15))} />
                 <button onClick={() => setPreviewZoom(100)} style={{ background: 'none', border: 'none', color: '#a1a1aa', fontSize: 10, cursor: 'pointer' }}>100%</button>
               </div>
-              <button onClick={() => setShowSafeZones(!showSafeZones)} style={{ background: showSafeZones ? '#2563eb' : 'transparent', border: 'none', color: '#fff', padding: 4, borderRadius: 4, cursor: 'pointer' }} title="רשת עזר (Safe Zones)">
+              <button onClick={() => setShowSafeZones(!showSafeZones)} style={{ background: showSafeZones ? '#2563eb' : 'transparent', border: 'none', color: '#fff', padding: 4, borderRadius: 4, cursor: 'pointer' }}>
                 <Grid3x3 size={13} />
               </button>
             </div>
@@ -572,6 +689,7 @@ export default function App() {
                 transform: `scale(${previewZoom / 100})`
               }}
             >
+              {/* הווידאו מושתק כי השמע שלו מנוגן ומנוהל דרך ערוץ A1 */}
               {activeClip ? (
                 activeClip.isImage ? (
                   <img
@@ -587,6 +705,7 @@ export default function App() {
                 ) : (
                   <video
                     ref={videoRef}
+                    muted
                     onTimeUpdate={handleTimeUpdate}
                     playsInline
                     style={{
@@ -600,18 +719,20 @@ export default function App() {
                   />
                 )
               ) : (
-                <video ref={videoRef} hidden />
+                <video ref={videoRef} muted hidden />
               )}
 
+              {/* נגן השמע של מסילת A1 */}
+              <audio ref={audioTrackRef} hidden />
+
               {clips.length === 0 && pipClips.length === 0 && (
-                <span style={{ color: '#52525b', fontSize: 13 }}>העלה סרטונים או תמונות ממאגר המדיה כדי להתחיל</span>
+                <span style={{ color: '#52525b', fontSize: 13 }}>העלה סרטון ממאגר המדיה (השמע שלו יתווסף אוטומטית לערוץ השמע)</span>
               )}
 
               {showSafeZones && (
                 <div style={{ position: 'absolute', inset: '8%', border: '1px dashed rgba(56,189,248,0.45)', pointerEvents: 'none', zIndex: 40 }} />
               )}
 
-              {/* שכבות תמונה ו-PiP מרובות */}
               {pipClips.map((pip) => {
                 if (currentTime < pip.startTime || currentTime > pip.endTime) return null;
                 const isSel = selectedItem?.type === 'pip' && selectedItem?.id === pip.id;
@@ -638,7 +759,6 @@ export default function App() {
                 );
               })}
 
-              {/* שכבות אקורדים */}
               {chords.map((c) => {
                 if (currentTime < c.startTime || currentTime > c.endTime) return null;
                 return (
@@ -652,7 +772,6 @@ export default function App() {
                 );
               })}
 
-              {/* שכבות כתוביות */}
               {texts.map((txt) => {
                 if (currentTime < txt.startTime || currentTime > txt.endTime) return null;
                 const isSel = selectedItem?.type === 'text' && selectedItem?.id === txt.id;
@@ -674,7 +793,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* סרגל ניגון כולל לחצן חזרה להתחלה 00:00:00 */}
           <div style={styles.transportBar}>
             <button style={styles.transportBtn} onClick={handleResetToZero} title="חזור להתחלה 00:00:00 (Home)">
               <SkipBack size={15} color="#38bdf8" />
@@ -691,7 +809,6 @@ export default function App() {
           </div>
         </main>
 
-        {/* פאנל ה-Inspector הניתן לסגירה או לפיצול לחלון צף */}
         <WindowContainer
           title="הגדרות אלמנט נבחר (Inspector)"
           icon={<Sliders size={13} color="#38bdf8" />}
@@ -724,7 +841,6 @@ export default function App() {
         </WindowContainer>
       </div>
 
-      {/* ציר הזמן התחתון - ניתן לסגירה או לפיצול לחלון צף */}
       <WindowContainer
         title="ציר זמן מרובה ערוצים (Multi-Track Timeline)"
         icon={<Film size={13} color="#38bdf8" />}
