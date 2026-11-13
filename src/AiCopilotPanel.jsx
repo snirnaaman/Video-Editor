@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+.import React, { useState, useEffect } from 'react';
 import { Bot, Send, X, Settings, Zap } from 'lucide-react';
 
 export default function AiCopilotPanel({ 
